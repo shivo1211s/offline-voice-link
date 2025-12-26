@@ -28,7 +28,6 @@ android {
 repositories {
     google()
     mavenCentral()
-    maven { url 'https://jitpack.io' }
 }
 
 dependencies {
@@ -45,7 +44,7 @@ dependencies {
     implementation 'org.java-websocket:Java-WebSocket:1.5.4'
     
     // WebRTC for audio/video calls
-    implementation 'io.github.nicmus:webrtc-android:1.0.4'
+    implementation 'io.github.webrtc-sdk:android:125.6422.06.1'
 }
 
 apply from: 'capacitor.build.gradle'
