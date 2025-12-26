@@ -1,73 +1,129 @@
-# Welcome to your Lovable project
+# LAN Chat - Offline Voice Link
+
+A peer-to-peer LAN chat application with voice calling capabilities, built with React, Capacitor, and native Android plugins.
 
 ## Project info
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+**URL**: https://lovable.dev/projects/34eded86-dadd-44da-9933-defafd6cc525
 
-## How can I edit this code?
+## Features
 
-There are several ways of editing your application.
+- 📱 Cross-platform (Web + Android)
+- 💬 Real-time P2P messaging over LAN
+- 📞 Voice calling support
+- 🔍 Automatic peer discovery using mDNS/NSD
+- 📴 Works completely offline (no internet required)
 
-**Use Lovable**
-
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
+## Quick Start (Web)
 
 ```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+# Install dependencies
+npm install
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+# Start development server
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+## Android Development
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+### Prerequisites
 
-**Use GitHub Codespaces**
+- [Node.js](https://nodejs.org/) (v18 or later)
+- [Android Studio](https://developer.android.com/studio) (latest version)
+- Java JDK 17 (included with Android Studio)
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+### Build & Run Android App
 
-## What technologies are used for this project?
+**Step 1: Install dependencies**
+```sh
+npm install
+```
 
-This project is built with:
+**Step 2: Build the web app**
+```sh
+npm run build
+```
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+**Step 3: Sync with Android**
+```sh
+npx cap sync android
+```
 
-## How can I deploy this project?
+**Step 4: Open in Android Studio**
+```sh
+npx cap open android
+```
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+**Step 5: Run the app**
+1. Wait for Gradle sync to complete (bottom status bar)
+2. Select your device/emulator from the dropdown (top toolbar)
+3. Click the green Run ▶️ button
 
-## Can I connect a custom domain to my Lovable project?
+### Troubleshooting Android Studio
 
-Yes, you can!
+**"No module" in run configuration:**
+- Make sure `android/settings.gradle` exists
+- Run `npx cap sync android` again
+- File → Sync Project with Gradle Files
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+**Device not showing:**
+- Tools → Device Manager → Create Device (for emulator)
+- For physical device: Enable USB debugging in Developer Options
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+**Build errors:**
+- File → Invalidate Caches / Restart
+- Delete `android/.gradle` folder and sync again
+
+### Live Reload (Development)
+
+To enable hot-reload from the Lovable preview:
+
+1. Edit `capacitor.config.ts`:
+```ts
+server: {
+  url: 'https://34eded86-dadd-44da-9933-defafd6cc525.lovableproject.com?forceHideBadge=true',
+  cleartext: true,
+  androidScheme: 'https'
+}
+```
+
+2. Rebuild and run:
+```sh
+npx cap sync android
+npx cap run android
+```
+
+## How can I edit this code?
+
+**Use Lovable**
+
+Simply visit the [Lovable Project](https://lovable.dev/projects/34eded86-dadd-44da-9933-defafd6cc525) and start prompting.
+
+**Use your preferred IDE**
+
+Clone this repo and push changes:
+
+```sh
+git clone <YOUR_GIT_URL>
+cd <YOUR_PROJECT_NAME>
+npm install
+npm run dev
+```
+
+## Technologies
+
+- **Frontend**: React, TypeScript, Vite, Tailwind CSS, shadcn/ui
+- **Mobile**: Capacitor, Android native plugins
+- **P2P**: WebSocket, mDNS/NSD for discovery, WebRTC for calls
+
+## Deployment
+
+**Web**: Open [Lovable](https://lovable.dev/projects/34eded86-dadd-44da-9933-defafd6cc525) → Share → Publish
+
+**Android**: Generate signed APK in Android Studio → Build → Generate Signed Bundle/APK
+
+## Custom Domain
+
+To connect a domain: Project → Settings → Domains → Connect Domain
+
+Read more: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)

@@ -37,11 +37,5 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        
-        <!-- Service for background network discovery -->
-        <service
-            android:name=".services.LANChatService"
-            android:enabled="true"
-            android:exported="false" />
     </application>
 </manifest>
