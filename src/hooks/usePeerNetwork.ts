@@ -3,6 +3,7 @@ import { Peer, P2PMessage, SignalingMessage, LocalProfile } from '@/types/p2p';
 import { saveMessage, getMessages, updateMessageStatus, savePeer, getPeers } from '@/lib/storage';
 import LanDiscovery, { DiscoveredPeer } from '@/plugins/LanDiscovery';
 import WebSocketServer from '@/plugins/WebSocketServer';
+import { usePeerClientMapping } from './usePeerClientMapping';
 
 interface UsePeerNetworkProps {
   profile: LocalProfile | null;
@@ -22,6 +23,17 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
+
+  // Use the peer-client mapping hook
+  const {
+    registerPeerConnection,
+    updateFromJoinMessage,
+    getClientIdForPeer,
+    getPeerIdForClient,
+    removePeerMapping,
+    clearAllMappings,
+    debugGetAllMappings,
+  } = usePeerClientMapping();
 
   // Initialize network discovery and WebSocket server
   useEffect(() => {
@@ -55,18 +67,40 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
   // Store pending call offers to handle WebRTC signaling
   const pendingCallOffersRef = useRef<Map<string, RTCSessionDescriptionInit>>(new Map());
 
+  // Send message to a specific peer using their profile ID
+  const sendToPeer = useCallback(async (peerId: string, message: SignalingMessage) => {
+    try {
+      const clientId = getClientIdForPeer(peerId);
+      
+      if (clientId) {
+        console.log('[usePeerNetwork] Sending to peer:', peerId, 'via clientId:', clientId);
+        await WebSocketServer.send({ clientId, data: JSON.stringify(message) });
+        return true;
+      } else {
+        // Fallback to broadcast if no direct mapping
+        console.log('[usePeerNetwork] No clientId for peer:', peerId, 'falling back to broadcast');
+        console.log('[usePeerNetwork] Current mappings:', debugGetAllMappings());
+        await WebSocketServer.broadcast({ data: JSON.stringify(message) });
+        return true;
+      }
+    } catch (error) {
+      console.error('[usePeerNetwork] sendToPeer error:', error);
+      return false;
+    }
+  }, [getClientIdForPeer, debugGetAllMappings]);
+
   // Handle incoming WebSocket messages
-  const handleIncomingData = useCallback((data: string) => {
+  const handleIncomingData = useCallback((data: string, clientId?: string) => {
     try {
       const message: SignalingMessage = JSON.parse(data);
-      console.log('[usePeerNetwork] Received message:', message.type, 'from:', message.from);
+      console.log('[usePeerNetwork] Received message:', message.type, 'from:', message.from, 'clientId:', clientId);
       
       if (!profile) {
         console.log('[usePeerNetwork] No profile, ignoring message');
         return;
       }
       
-      // Don't filter by message.from === profile.id here - we want to receive messages from others
+      // Don't process our own messages
       if (message.from === profile.id) {
         console.log('[usePeerNetwork] Ignoring own message');
         return;
@@ -78,10 +112,16 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
         return;
       }
 
+      // If we have a clientId, update the mapping
+      if (clientId && message.from) {
+        const ip = clientId.split(':')[0].replace(/^\//, ''); // Extract IP from clientId like "/192.168.1.5:54321"
+        updateFromJoinMessage(message.from, ip, clientId);
+      }
+
       switch (message.type) {
         case 'message':
           console.log('[usePeerNetwork] Processing incoming chat message');
-          handleIncomingMessage(message.payload);
+          handleIncomingMessage(message.payload, message.from);
           break;
         case 'typing':
           onTyping?.(message.from, message.payload.isTyping);
@@ -93,7 +133,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
           updateMessageStatus(message.payload.messageId, 'seen');
           break;
         case 'join':
-          // Handle peer joining - add/update peer in list
+          // Handle peer joining - add/update peer in list and update mapping
           console.log('[usePeerNetwork] Peer joined:', message.payload);
           const joinedPeer: Peer = {
             id: message.from,
@@ -103,6 +143,12 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
             lastSeen: new Date(),
             avatarUrl: message.payload.avatarUrl,
           };
+          
+          // Update the peer-client mapping with the profile info
+          if (clientId) {
+            updateFromJoinMessage(message.from, message.payload.ip, clientId);
+          }
+          
           setPeers(prev => {
             const exists = prev.find(p => p.id === message.from);
             if (exists) {
@@ -111,11 +157,26 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
             return [...prev, joinedPeer];
           });
           savePeer(joinedPeer);
+          
+          // Send our own join message back so they know who we are
+          if (profile) {
+            sendToPeer(message.from, {
+              type: 'join',
+              from: profile.id,
+              to: message.from,
+              payload: {
+                username: profile.username,
+                ip: myIp,
+                avatarUrl: profile.avatarUrl,
+              },
+            });
+          }
           break;
         case 'leave':
           setPeers(prev => prev.map(p => 
             p.id === message.from ? { ...p, isOnline: false, lastSeen: new Date() } : p
           ));
+          removePeerMapping(message.from);
           break;
         case 'call-offer':
           console.log('[usePeerNetwork] Received call offer from:', message.from);
@@ -141,9 +202,9 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     } catch (error) {
       console.error('[usePeerNetwork] Error parsing message:', error);
     }
-  }, [profile, peers, onTyping, onCallOffer]);
+  }, [profile, peers, myIp, onTyping, onCallOffer, updateFromJoinMessage, removePeerMapping, sendToPeer]);
 
-  const handleIncomingMessage = useCallback((messageData: any) => {
+  const handleIncomingMessage = useCallback((messageData: any, senderId: string) => {
     const message: P2PMessage = {
       ...messageData,
       timestamp: new Date(messageData.timestamp),
@@ -153,16 +214,16 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     saveMessage(message);
     onMessage?.(message);
 
-    // Send delivered confirmation
+    // Send delivered confirmation directly to the sender
     if (profile) {
-      broadcast({
+      sendToPeer(senderId, {
         type: 'delivered',
         from: profile.id,
-        to: message.senderId,
+        to: senderId,
         payload: { messageId: message.id },
       });
     }
-  }, [profile, onMessage]);
+  }, [profile, onMessage, sendToPeer]);
 
   const handleWebRTCSignaling = useCallback(async (message: SignalingMessage) => {
     const peerId = message.from;
@@ -220,7 +281,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
 
     pc.onicecandidate = (event) => {
       if (event.candidate && profile) {
-        broadcast({
+        sendToPeer(peerId, {
           type: 'ice-candidate',
           from: profile.id,
           to: peerId,
@@ -256,14 +317,27 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
       // Start WebSocket server
       await WebSocketServer.start({ port: WS_PORT });
 
-      // Setup message listener
+      // Setup message listener - now includes clientId
       await WebSocketServer.addListener('messageReceived', (data) => {
-        handleIncomingData(data.data);
+        handleIncomingData(data.data, data.clientId);
       });
 
       // Setup peer connection listener
       await WebSocketServer.addListener('clientConnected', async (data) => {
         console.log('[usePeerNetwork] Client connected:', data.clientId);
+        // Note: We'll get the profile mapping when they send a 'join' message
+      });
+
+      // Setup peer disconnection listener
+      await WebSocketServer.addListener('clientDisconnected', async (data) => {
+        console.log('[usePeerNetwork] Client disconnected:', data.clientId);
+        const peerId = getPeerIdForClient(data.clientId);
+        if (peerId) {
+          setPeers(prev => prev.map(p => 
+            p.id === peerId ? { ...p, isOnline: false, lastSeen: new Date() } : p
+          ));
+          removePeerMapping(peerId);
+        }
       });
 
       // Start advertising our service
@@ -281,10 +355,15 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
         
         // Connect to the peer's WebSocket server
         try {
-          await WebSocketServer.connectToPeer({
+          const result = await WebSocketServer.connectToPeer({
             ip: discoveredPeer.ip,
             port: discoveredPeer.port
           });
+
+          const clientId = result.clientId || `${discoveredPeer.ip}:${discoveredPeer.port}`;
+          
+          // Register the initial mapping (mDNS ID → WebSocket clientId)
+          registerPeerConnection(discoveredPeer.id, clientId, discoveredPeer.ip);
 
           // Add to peer list
           const newPeer: Peer = {
@@ -305,16 +384,19 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
 
           savePeer(newPeer);
 
-          // Announce ourselves
-          broadcast({
-            type: 'join',
-            from: profile.id,
-            payload: {
-              username: profile.username,
-              ip: myIp,
-              avatarUrl: profile.avatarUrl,
-            },
-          });
+          // Wait a moment for the connection to be fully established
+          setTimeout(() => {
+            // Announce ourselves via the new connection
+            sendToPeer(discoveredPeer.id, {
+              type: 'join',
+              from: profile.id,
+              payload: {
+                username: profile.username,
+                ip: myIp,
+                avatarUrl: profile.avatarUrl,
+              },
+            });
+          }, 200);
         } catch (error) {
           console.error('[usePeerNetwork] Failed to connect to peer:', error);
         }
@@ -325,6 +407,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
         setPeers(prev => prev.map(p => 
           p.id === discoveredPeer.id ? { ...p, isOnline: false, lastSeen: new Date() } : p
         ));
+        removePeerMapping(discoveredPeer.id);
       });
 
       setIsConnected(true);
@@ -341,7 +424,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
       // Fallback for web testing - just set as connected
       setIsConnected(true);
     }
-  }, [profile, myIp, broadcast, handleIncomingData]);
+  }, [profile, myIp, handleIncomingData, registerPeerConnection, removePeerMapping, getPeerIdForClient, sendToPeer]);
 
   // Go offline - stop everything
   const goOffline = useCallback(async () => {
@@ -363,10 +446,11 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
 
     setIsConnected(false);
     setPeers(prev => prev.map(p => ({ ...p, isOnline: false })));
+    clearAllMappings();
     
     peerConnectionsRef.current.forEach(pc => pc.close());
     peerConnectionsRef.current.clear();
-  }, [profile, broadcast]);
+  }, [profile, broadcast, clearAllMappings]);
 
   // Send a message
   const sendMessage = useCallback(async (receiverId: string, content: string): Promise<P2PMessage> => {
@@ -385,30 +469,31 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     console.log('[usePeerNetwork] Sending message to:', receiverId, 'content:', content);
     await saveMessage(message);
 
-    await broadcast({
+    // Use sendToPeer for targeted delivery
+    const sent = await sendToPeer(receiverId, {
       type: 'message',
       from: profile.id,
       to: receiverId,
       payload: message,
     });
 
-    console.log('[usePeerNetwork] Message broadcast complete');
+    console.log('[usePeerNetwork] Message send result:', sent);
     await updateMessageStatus(message.id, 'sent');
     
     return { ...message, status: 'sent' };
-  }, [profile, broadcast]);
+  }, [profile, sendToPeer]);
 
   // Send typing indicator
   const sendTyping = useCallback((receiverId: string, isTyping: boolean) => {
     if (!profile) return;
 
-    broadcast({
+    sendToPeer(receiverId, {
       type: 'typing',
       from: profile.id,
       to: receiverId,
       payload: { isTyping },
     });
-  }, [profile, broadcast]);
+  }, [profile, sendToPeer]);
 
   // Mark messages as seen
   const markAsSeen = useCallback((messageIds: string[], senderId: string) => {
@@ -417,14 +502,14 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     messageIds.forEach(messageId => {
       updateMessageStatus(messageId, 'seen');
       
-      broadcast({
+      sendToPeer(senderId, {
         type: 'seen',
         from: profile.id,
         to: senderId,
         payload: { messageId },
       });
     });
-  }, [profile, broadcast]);
+  }, [profile, sendToPeer]);
 
   // Initiate a call
   const initiateCall = useCallback(async (peerId: string) => {
@@ -450,7 +535,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      broadcast({
+      sendToPeer(peerId, {
         type: 'call-offer',
         from: profile.id,
         to: peerId,
@@ -462,7 +547,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     } catch (error) {
       console.error('[usePeerNetwork] Call initiation error:', error);
     }
-  }, [profile, broadcast]);
+  }, [profile, sendToPeer]);
 
   // Answer an incoming call
   const answerCall = useCallback(async (peerId: string) => {
@@ -496,7 +581,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
         await pc.setLocalDescription(answer);
         
         // Send answer
-        await broadcast({
+        await sendToPeer(peerId, {
           type: 'call-answer',
           from: profile.id,
           to: peerId,
@@ -509,7 +594,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     } catch (error) {
       console.error('[usePeerNetwork] Answer call error:', error);
     }
-  }, [profile, broadcast]);
+  }, [profile, sendToPeer]);
 
   // End call
   const endCall = useCallback((peerId: string) => {
@@ -531,13 +616,13 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     
     pendingCallOffersRef.current.delete(peerId);
 
-    broadcast({
+    sendToPeer(peerId, {
       type: 'call-end',
       from: profile.id,
       to: peerId,
       payload: null,
     });
-  }, [profile, broadcast]);
+  }, [profile, sendToPeer]);
 
   // For backward compatibility - aliases
   const startHost = goOnline;
