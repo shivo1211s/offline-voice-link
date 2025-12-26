@@ -1,0 +1,11 @@
+// Add these dependencies to android/app/build.gradle in the dependencies block:
+// 
+// dependencies {
+//     ...existing dependencies...
+//     
+//     // WebSocket library for server functionality
+//     implementation 'org.java-websocket:Java-WebSocket:1.5.4'
+//     
+//     // WebRTC for audio/video calls
+//     implementation 'io.github.webrtc-sdk:android:125.6422.06.1'
+// }
