@@ -1,6 +1,6 @@
 // Web fallback for WebSocket Server - uses BroadcastChannel for same-device messaging
 import { WebPlugin } from '@capacitor/core';
-import type { WebSocketServerPlugin } from './WebSocketServer';
+import type { WebSocketServerPlugin } from './WebSocketServerTypes';
 
 export class WebSocketServerWeb extends WebPlugin implements WebSocketServerPlugin {
   private broadcastChannel: BroadcastChannel | null = null;
