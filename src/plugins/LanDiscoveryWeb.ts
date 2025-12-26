@@ -1,6 +1,6 @@
 // Web fallback for LAN Discovery - uses BroadcastChannel for same-device testing
 import { WebPlugin } from '@capacitor/core';
-import type { LanDiscoveryPlugin, DiscoveredPeer } from './LanDiscovery';
+import type { LanDiscoveryPlugin, DiscoveredPeer } from './LanDiscoveryTypes';
 
 export class LanDiscoveryWeb extends WebPlugin implements LanDiscoveryPlugin {
   private broadcastChannel: BroadcastChannel | null = null;
