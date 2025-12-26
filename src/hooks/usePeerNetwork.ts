@@ -52,16 +52,35 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     };
   }, [profile]);
 
+  // Store pending call offers to handle WebRTC signaling
+  const pendingCallOffersRef = useRef<Map<string, RTCSessionDescriptionInit>>(new Map());
+
   // Handle incoming WebSocket messages
   const handleIncomingData = useCallback((data: string) => {
     try {
       const message: SignalingMessage = JSON.parse(data);
+      console.log('[usePeerNetwork] Received message:', message.type, 'from:', message.from);
       
-      if (!profile || message.from === profile.id) return;
-      if (message.to && message.to !== profile.id) return;
+      if (!profile) {
+        console.log('[usePeerNetwork] No profile, ignoring message');
+        return;
+      }
+      
+      // Don't filter by message.from === profile.id here - we want to receive messages from others
+      if (message.from === profile.id) {
+        console.log('[usePeerNetwork] Ignoring own message');
+        return;
+      }
+      
+      // Only filter targeted messages (with 'to' field) that aren't for us
+      if (message.to && message.to !== profile.id) {
+        console.log('[usePeerNetwork] Message not for us, to:', message.to);
+        return;
+      }
 
       switch (message.type) {
         case 'message':
+          console.log('[usePeerNetwork] Processing incoming chat message');
           handleIncomingMessage(message.payload);
           break;
         case 'typing':
@@ -73,18 +92,48 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
         case 'seen':
           updateMessageStatus(message.payload.messageId, 'seen');
           break;
+        case 'join':
+          // Handle peer joining - add/update peer in list
+          console.log('[usePeerNetwork] Peer joined:', message.payload);
+          const joinedPeer: Peer = {
+            id: message.from,
+            username: message.payload.username,
+            ip: message.payload.ip,
+            isOnline: true,
+            lastSeen: new Date(),
+            avatarUrl: message.payload.avatarUrl,
+          };
+          setPeers(prev => {
+            const exists = prev.find(p => p.id === message.from);
+            if (exists) {
+              return prev.map(p => p.id === message.from ? { ...p, ...joinedPeer } : p);
+            }
+            return [...prev, joinedPeer];
+          });
+          savePeer(joinedPeer);
+          break;
+        case 'leave':
+          setPeers(prev => prev.map(p => 
+            p.id === message.from ? { ...p, isOnline: false, lastSeen: new Date() } : p
+          ));
+          break;
         case 'call-offer':
+          console.log('[usePeerNetwork] Received call offer from:', message.from);
           const callerPeer = peers.find(p => p.id === message.from);
-          if (callerPeer) {
+          if (callerPeer && message.payload.sdp) {
+            // Store the SDP for answering
+            pendingCallOffersRef.current.set(message.from, message.payload.sdp);
             onCallOffer?.(callerPeer);
           }
           break;
         case 'call-answer':
-        case 'call-end':
-          // Handle call signaling
+          console.log('[usePeerNetwork] Received call answer from:', message.from);
+          handleCallAnswer(message);
           break;
-        case 'offer':
-        case 'answer':
+        case 'call-end':
+          console.log('[usePeerNetwork] Call ended by:', message.from);
+          handleCallEnd(message.from);
+          break;
         case 'ice-candidate':
           handleWebRTCSignaling(message);
           break;
@@ -124,25 +173,45 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
       peerConnectionsRef.current.set(peerId, pc);
     }
 
-    if (message.type === 'offer') {
-      await pc.setRemoteDescription(new RTCSessionDescription(message.payload));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      
-      if (profile) {
-        broadcast({
-          type: 'answer',
-          from: profile.id,
-          to: peerId,
-          payload: answer,
-        });
+    try {
+      if (message.type === 'ice-candidate' && message.payload) {
+        console.log('[usePeerNetwork] Adding ICE candidate from:', peerId);
+        await pc.addIceCandidate(new RTCIceCandidate(message.payload));
       }
-    } else if (message.type === 'answer') {
-      await pc.setRemoteDescription(new RTCSessionDescription(message.payload));
-    } else if (message.type === 'ice-candidate') {
-      await pc.addIceCandidate(new RTCIceCandidate(message.payload));
+    } catch (error) {
+      console.error('[usePeerNetwork] WebRTC signaling error:', error);
     }
   }, [profile]);
+
+  const handleCallAnswer = useCallback(async (message: SignalingMessage) => {
+    const peerId = message.from;
+    const pc = peerConnectionsRef.current.get(peerId);
+    
+    if (pc && message.payload.sdp) {
+      try {
+        console.log('[usePeerNetwork] Setting remote description from call answer');
+        await pc.setRemoteDescription(new RTCSessionDescription(message.payload.sdp));
+      } catch (error) {
+        console.error('[usePeerNetwork] Error handling call answer:', error);
+      }
+    }
+  }, []);
+
+  const handleCallEnd = useCallback((peerId: string) => {
+    // Stop local stream
+    localStreamRef.current?.getTracks().forEach(track => track.stop());
+    localStreamRef.current = null;
+    remoteStreamRef.current = null;
+    
+    // Close peer connection
+    const pc = peerConnectionsRef.current.get(peerId);
+    if (pc) {
+      pc.close();
+      peerConnectionsRef.current.delete(peerId);
+    }
+    
+    pendingCallOffersRef.current.delete(peerId);
+  }, []);
 
   const createPeerConnection = (peerId: string): RTCPeerConnection => {
     const pc = new RTCPeerConnection({
@@ -169,7 +238,9 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
 
   const broadcast = useCallback(async (message: SignalingMessage) => {
     try {
+      console.log('[usePeerNetwork] Broadcasting:', message.type, 'to:', message.to || 'all');
       await WebSocketServer.broadcast({ data: JSON.stringify(message) });
+      console.log('[usePeerNetwork] Broadcast sent successfully');
     } catch (error) {
       console.log('[usePeerNetwork] Broadcast error:', error);
     }
@@ -311,15 +382,17 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
       type: 'text',
     };
 
+    console.log('[usePeerNetwork] Sending message to:', receiverId, 'content:', content);
     await saveMessage(message);
 
-    broadcast({
+    await broadcast({
       type: 'message',
       from: profile.id,
       to: receiverId,
       payload: message,
     });
 
+    console.log('[usePeerNetwork] Message broadcast complete');
     await updateMessageStatus(message.id, 'sent');
     
     return { ...message, status: 'sent' };
@@ -391,13 +464,63 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     }
   }, [profile, broadcast]);
 
+  // Answer an incoming call
+  const answerCall = useCallback(async (peerId: string) => {
+    if (!profile) return;
+
+    try {
+      console.log('[usePeerNetwork] Answering call from:', peerId);
+      
+      // Get microphone access
+      localStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      // Create peer connection if needed
+      let pc = peerConnectionsRef.current.get(peerId);
+      if (!pc) {
+        pc = createPeerConnection(peerId);
+        peerConnectionsRef.current.set(peerId, pc);
+      }
+
+      // Add audio tracks
+      localStreamRef.current.getTracks().forEach(track => {
+        pc!.addTrack(track, localStreamRef.current!);
+      });
+
+      // Get the pending offer
+      const offer = pendingCallOffersRef.current.get(peerId);
+      if (offer) {
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        
+        // Create answer
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        
+        // Send answer
+        await broadcast({
+          type: 'call-answer',
+          from: profile.id,
+          to: peerId,
+          payload: { sdp: answer },
+        });
+        
+        pendingCallOffersRef.current.delete(peerId);
+        console.log('[usePeerNetwork] Call answered successfully');
+      }
+    } catch (error) {
+      console.error('[usePeerNetwork] Answer call error:', error);
+    }
+  }, [profile, broadcast]);
+
   // End call
   const endCall = useCallback((peerId: string) => {
     if (!profile) return;
 
+    console.log('[usePeerNetwork] Ending call with:', peerId);
+    
     // Stop local stream
     localStreamRef.current?.getTracks().forEach(track => track.stop());
     localStreamRef.current = null;
+    remoteStreamRef.current = null;
 
     // Close peer connection
     const pc = peerConnectionsRef.current.get(peerId);
@@ -405,6 +528,8 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
       pc.close();
       peerConnectionsRef.current.delete(peerId);
     }
+    
+    pendingCallOffersRef.current.delete(peerId);
 
     broadcast({
       type: 'call-end',
@@ -435,6 +560,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     sendTyping,
     markAsSeen,
     initiateCall,
+    answerCall,
     endCall,
     getMessages,
     localStream: localStreamRef.current,
