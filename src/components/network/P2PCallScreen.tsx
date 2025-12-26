@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Peer, P2PMessage } from '@/types/p2p';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Peer } from '@/types/p2p';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Phone, PhoneOff, Mic, MicOff, Volume2, VolumeX } from 'lucide-react';
@@ -10,6 +10,8 @@ interface P2PCallScreenProps {
   onEnd: () => void;
   onAccept: () => void;
   onReject: () => void;
+  localStream?: MediaStream | null;
+  remoteStream?: MediaStream | null;
 }
 
 export function P2PCallScreen({
@@ -18,11 +20,31 @@ export function P2PCallScreen({
   onEnd,
   onAccept,
   onReject,
+  localStream,
+  remoteStream,
 }: P2PCallScreenProps) {
   const [callDuration, setCallDuration] = useState(0);
   const [isConnected, setIsConnected] = useState(!isIncoming);
   const [isMuted, setIsMuted] = useState(false);
   const [isSpeakerOn, setIsSpeakerOn] = useState(true);
+  
+  const localAudioRef = useRef<HTMLAudioElement>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
+
+  // Attach streams to audio elements
+  useEffect(() => {
+    if (localAudioRef.current && localStream) {
+      localAudioRef.current.srcObject = localStream;
+      localAudioRef.current.muted = true; // Mute local playback to prevent echo
+    }
+  }, [localStream]);
+
+  useEffect(() => {
+    if (remoteAudioRef.current && remoteStream) {
+      remoteAudioRef.current.srcObject = remoteStream;
+      remoteAudioRef.current.muted = !isSpeakerOn;
+    }
+  }, [remoteStream, isSpeakerOn]);
 
   // Call timer
   useEffect(() => {
@@ -46,8 +68,28 @@ export function P2PCallScreen({
     onAccept();
   };
 
+  const toggleMute = () => {
+    if (localStream) {
+      localStream.getAudioTracks().forEach(track => {
+        track.enabled = isMuted;
+      });
+    }
+    setIsMuted(!isMuted);
+  };
+
+  const toggleSpeaker = () => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.muted = isSpeakerOn;
+    }
+    setIsSpeakerOn(!isSpeakerOn);
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-gradient-to-b from-background to-secondary/20">
+      {/* Hidden audio elements */}
+      <audio ref={localAudioRef} autoPlay playsInline />
+      <audio ref={remoteAudioRef} autoPlay playsInline />
+
       {/* Animated background circles */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full bg-primary/5 animate-pulse" />
@@ -77,6 +119,22 @@ export function P2PCallScreen({
             ? formatDuration(callDuration)
             : 'Calling...'}
         </p>
+
+        {/* Audio status indicators */}
+        {isConnected && (
+          <div className="flex gap-2 mt-4">
+            {localStream && (
+              <span className="px-3 py-1 rounded-full bg-green-500/20 text-green-500 text-xs font-medium">
+                Audio Connected
+              </span>
+            )}
+            {isMuted && (
+              <span className="px-3 py-1 rounded-full bg-destructive/20 text-destructive text-xs font-medium">
+                Muted
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Controls */}
@@ -105,7 +163,7 @@ export function P2PCallScreen({
           <>
             {/* Mute */}
             <Button
-              onClick={() => setIsMuted(!isMuted)}
+              onClick={toggleMute}
               variant="secondary"
               size="lg"
               className={`w-14 h-14 rounded-full ${isMuted ? 'bg-destructive/20 text-destructive' : ''}`}
@@ -124,7 +182,7 @@ export function P2PCallScreen({
 
             {/* Speaker */}
             <Button
-              onClick={() => setIsSpeakerOn(!isSpeakerOn)}
+              onClick={toggleSpeaker}
               variant="secondary"
               size="lg"
               className={`w-14 h-14 rounded-full ${!isSpeakerOn ? 'bg-muted text-muted-foreground' : ''}`}
@@ -135,10 +193,10 @@ export function P2PCallScreen({
         )}
       </div>
 
-      {/* End call hint */}
+      {/* Status hint */}
       {isConnected && (
         <p className="absolute bottom-8 text-sm text-muted-foreground">
-          Full duplex audio • LAN connection
+          Full duplex audio • LAN P2P connection
         </p>
       )}
     </div>

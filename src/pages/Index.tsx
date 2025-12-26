@@ -41,16 +41,18 @@ const Index = () => {
 
   const {
     peers,
-    isHost,
     isConnected,
-    hostAddress,
-    startHost,
-    joinNetwork,
-    disconnect,
+    myIp,
+    isScanning,
+    goOnline,
+    goOffline,
     sendMessage,
     sendTyping,
     markAsSeen,
     initiateCall,
+    endCall,
+    localStream,
+    remoteStream,
   } = usePeerNetwork({
     profile,
     onMessage: handleMessage,
@@ -85,10 +87,11 @@ const Index = () => {
     return (
       <ConnectionSetup
         onCreateProfile={createProfile}
-        onStartHost={startHost}
-        onJoinNetwork={joinNetwork}
+        onGoOnline={goOnline}
         hasProfile={!!profile}
         username={profile?.username}
+        myIp={myIp}
+        isScanning={isScanning}
       />
     );
   }
@@ -100,11 +103,18 @@ const Index = () => {
   };
 
   const handleEndCall = () => {
+    if (activeCall) {
+      endCall(activeCall.peer.id);
+    }
     setActiveCall(null);
   };
 
+  const handleAcceptCall = () => {
+    // Call is accepted - WebRTC connection is already being established
+  };
+
   const handleDisconnect = () => {
-    disconnect();
+    goOffline();
     setSelectedPeer(null);
   };
 
@@ -115,8 +125,10 @@ const Index = () => {
         peer={activeCall.peer}
         isIncoming={activeCall.isIncoming}
         onEnd={handleEndCall}
-        onAccept={() => {}}
+        onAccept={handleAcceptCall}
         onReject={handleEndCall}
+        localStream={localStream}
+        remoteStream={remoteStream}
       />
     );
   }
@@ -125,8 +137,8 @@ const Index = () => {
     <div className="min-h-screen flex flex-col bg-background">
       <P2PHeader
         profile={profile}
-        isHost={isHost}
-        hostAddress={hostAddress}
+        isHost={true}
+        hostAddress={myIp}
         onDisconnect={handleDisconnect}
         onLogout={logout}
       />
@@ -142,8 +154,8 @@ const Index = () => {
             peers={peers}
             selectedPeer={selectedPeer}
             onSelectPeer={setSelectedPeer}
-            isHost={isHost}
-            hostAddress={hostAddress}
+            isHost={true}
+            hostAddress={myIp}
           />
         </div>
 
