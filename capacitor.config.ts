@@ -5,7 +5,7 @@ const config: CapacitorConfig = {
   appName: 'LAN Chat',
   webDir: 'dist',
   server: {
-    // For development: uncomment and set your local dev URL
+    // For development with live reload: uncomment and set your local dev URL
     // url: 'https://34eded86-dadd-44da-9933-defafd6cc525.lovableproject.com?forceHideBadge=true',
     // cleartext: true,
     androidScheme: 'https'
