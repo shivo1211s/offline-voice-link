@@ -1,5 +1,6 @@
 // LAN Discovery Plugin - TypeScript interface for native mDNS/NSD discovery
-import { registerPlugin } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
+import { LanDiscoveryWeb } from './LanDiscoveryWeb';
 
 export interface DiscoveredPeer {
   id: string;
@@ -34,9 +35,13 @@ export interface LanDiscoveryPlugin {
   ): Promise<{ remove: () => void }>;
 }
 
-// Register the plugin - will be implemented in native Android code
-const LanDiscovery = registerPlugin<LanDiscoveryPlugin>('LanDiscovery', {
-  web: () => import('./LanDiscoveryWeb').then(m => new m.LanDiscoveryWeb()),
-});
+// Use web fallback on web platform, native plugin on native
+let LanDiscovery: LanDiscoveryPlugin;
+
+if (Capacitor.isNativePlatform()) {
+  LanDiscovery = registerPlugin<LanDiscoveryPlugin>('LanDiscovery');
+} else {
+  LanDiscovery = new LanDiscoveryWeb() as LanDiscoveryPlugin;
+}
 
 export default LanDiscovery;

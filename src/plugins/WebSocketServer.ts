@@ -1,5 +1,6 @@
 // WebSocket Server Plugin - TypeScript interface for native WebSocket server
-import { registerPlugin } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
+import { WebSocketServerWeb } from './WebSocketServerWeb';
 
 export interface WebSocketMessage {
   clientId: string;
@@ -35,9 +36,13 @@ export interface WebSocketServerPlugin {
   ): Promise<{ remove: () => void }>;
 }
 
-// Register the plugin - will be implemented in native Android code
-const WebSocketServer = registerPlugin<WebSocketServerPlugin>('WebSocketServer', {
-  web: () => import('./WebSocketServerWeb').then(m => new m.WebSocketServerWeb()),
-});
+// Use web fallback on web platform, native plugin on native
+let WebSocketServer: WebSocketServerPlugin;
+
+if (Capacitor.isNativePlatform()) {
+  WebSocketServer = registerPlugin<WebSocketServerPlugin>('WebSocketServer');
+} else {
+  WebSocketServer = new WebSocketServerWeb() as WebSocketServerPlugin;
+}
 
 export default WebSocketServer;
