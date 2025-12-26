@@ -30,7 +30,7 @@ npm run dev
 
 - [Node.js](https://nodejs.org/) (v18 or later)
 - [Android Studio](https://developer.android.com/studio) (latest version)
-- Java JDK 17 (included with Android Studio)
+- Java JDK 21 (required for Capacitor 8; select an Embedded/installed JDK 21 in Android Studio)
 
 ### Build & Run Android App
 
