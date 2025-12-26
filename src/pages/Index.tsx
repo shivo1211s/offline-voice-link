@@ -7,6 +7,7 @@ import { PeerList } from '@/components/network/PeerList';
 import { P2PChatWindow } from '@/components/network/P2PChatWindow';
 import { P2PCallScreen } from '@/components/network/P2PCallScreen';
 import { EmptyChat } from '@/components/chat/EmptyChat';
+import { InstallPrompt } from '@/components/InstallPrompt';
 import { Peer, P2PMessage } from '@/types/p2p';
 import { Loader2 } from 'lucide-react';
 
@@ -169,6 +170,8 @@ const Index = () => {
           )}
         </div>
       </div>
+
+      <InstallPrompt />
     </div>
   );
 };
