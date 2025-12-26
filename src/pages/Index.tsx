@@ -1,39 +1,61 @@
-import { useState, useEffect } from 'react';
-import { useAuth } from '@/hooks/useAuth';
-import { useProfiles } from '@/hooks/useProfiles';
-import { AuthForm } from '@/components/auth/AuthForm';
-import { Header } from '@/components/layout/Header';
-import { ContactList } from '@/components/chat/ContactList';
-import { ChatWindow } from '@/components/chat/ChatWindow';
+import { useState, useEffect, useCallback } from 'react';
+import { useLocalProfile } from '@/hooks/useLocalProfile';
+import { usePeerNetwork } from '@/hooks/usePeerNetwork';
+import { ConnectionSetup } from '@/components/network/ConnectionSetup';
+import { P2PHeader } from '@/components/network/P2PHeader';
+import { PeerList } from '@/components/network/PeerList';
+import { P2PChatWindow } from '@/components/network/P2PChatWindow';
+import { P2PCallScreen } from '@/components/network/P2PCallScreen';
 import { EmptyChat } from '@/components/chat/EmptyChat';
-import { CallScreen } from '@/components/call/CallScreen';
-import { Profile } from '@/types/chat';
+import { Peer, P2PMessage } from '@/types/p2p';
 import { Loader2 } from 'lucide-react';
 
 const Index = () => {
-  const { user, profile, loading: authLoading, updateOnlineStatus } = useAuth();
-  const { profiles, loading: profilesLoading } = useProfiles(profile?.id || null);
-  const [selectedContact, setSelectedContact] = useState<Profile | null>(null);
-  const [activeCall, setActiveCall] = useState<{ contact: Profile; isIncoming: boolean } | null>(null);
+  const { profile, loading: profileLoading, createProfile, logout } = useLocalProfile();
+  const [selectedPeer, setSelectedPeer] = useState<Peer | null>(null);
+  const [activeCall, setActiveCall] = useState<{ peer: Peer; isIncoming: boolean } | null>(null);
   const [isMobileView, setIsMobileView] = useState(false);
+  const [typingPeers, setTypingPeers] = useState<Set<string>>(new Set());
+  const [latestMessage, setLatestMessage] = useState<P2PMessage | undefined>();
 
-  // Set online status
-  useEffect(() => {
-    if (profile) {
-      updateOnlineStatus(true);
-      
-      // Set offline when leaving
-      const handleBeforeUnload = () => {
-        updateOnlineStatus(false);
-      };
-      
-      window.addEventListener('beforeunload', handleBeforeUnload);
-      return () => {
-        window.removeEventListener('beforeunload', handleBeforeUnload);
-        updateOnlineStatus(false);
-      };
-    }
-  }, [profile, updateOnlineStatus]);
+  const handleMessage = useCallback((message: P2PMessage) => {
+    setLatestMessage(message);
+  }, []);
+
+  const handleTyping = useCallback((peerId: string, isTyping: boolean) => {
+    setTypingPeers(prev => {
+      const next = new Set(prev);
+      if (isTyping) {
+        next.add(peerId);
+      } else {
+        next.delete(peerId);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleCallOffer = useCallback((fromPeer: Peer) => {
+    setActiveCall({ peer: fromPeer, isIncoming: true });
+  }, []);
+
+  const {
+    peers,
+    isHost,
+    isConnected,
+    hostAddress,
+    startHost,
+    joinNetwork,
+    disconnect,
+    sendMessage,
+    sendTyping,
+    markAsSeen,
+    initiateCall,
+  } = usePeerNetwork({
+    profile,
+    onMessage: handleMessage,
+    onTyping: handleTyping,
+    onCallOffer: handleCallOffer,
+  });
 
   // Handle responsive view
   useEffect(() => {
@@ -46,7 +68,7 @@ const Index = () => {
   }, []);
 
   // Loading state
-  if (authLoading) {
+  if (profileLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="flex flex-col items-center gap-4">
@@ -57,25 +79,39 @@ const Index = () => {
     );
   }
 
-  // Not authenticated
-  if (!user || !profile) {
-    return <AuthForm />;
+  // Not connected - show setup
+  if (!profile || !isConnected) {
+    return (
+      <ConnectionSetup
+        onCreateProfile={createProfile}
+        onStartHost={startHost}
+        onJoinNetwork={joinNetwork}
+        hasProfile={!!profile}
+        username={profile?.username}
+      />
+    );
   }
 
   // Handle call
-  const handleCall = (contact: Profile) => {
-    setActiveCall({ contact, isIncoming: false });
+  const handleCall = (peer: Peer) => {
+    setActiveCall({ peer, isIncoming: false });
+    initiateCall(peer.id);
   };
 
   const handleEndCall = () => {
     setActiveCall(null);
   };
 
+  const handleDisconnect = () => {
+    disconnect();
+    setSelectedPeer(null);
+  };
+
   // Call screen overlay
   if (activeCall) {
     return (
-      <CallScreen
-        contact={activeCall.contact}
+      <P2PCallScreen
+        peer={activeCall.peer}
         isIncoming={activeCall.isIncoming}
         onEnd={handleEndCall}
         onAccept={() => {}}
@@ -86,35 +122,47 @@ const Index = () => {
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
-      <Header profile={profile} />
+      <P2PHeader
+        profile={profile}
+        isHost={isHost}
+        hostAddress={hostAddress}
+        onDisconnect={handleDisconnect}
+        onLogout={logout}
+      />
       
       <div className="flex-1 flex overflow-hidden">
-        {/* Contact List - hidden on mobile when chat is open */}
+        {/* Peer List - hidden on mobile when chat is open */}
         <div
           className={`w-full md:w-80 lg:w-96 flex-shrink-0 ${
-            isMobileView && selectedContact ? 'hidden' : 'block'
+            isMobileView && selectedPeer ? 'hidden' : 'block'
           }`}
         >
-          <ContactList
-            profiles={profiles}
-            selectedContact={selectedContact}
-            onSelectContact={setSelectedContact}
-            loading={profilesLoading}
+          <PeerList
+            peers={peers}
+            selectedPeer={selectedPeer}
+            onSelectPeer={setSelectedPeer}
+            isHost={isHost}
+            hostAddress={hostAddress}
           />
         </div>
 
         {/* Chat Window */}
         <div
           className={`flex-1 ${
-            isMobileView && !selectedContact ? 'hidden' : 'block'
+            isMobileView && !selectedPeer ? 'hidden' : 'block'
           }`}
         >
-          {selectedContact ? (
-            <ChatWindow
+          {selectedPeer ? (
+            <P2PChatWindow
               currentProfile={profile}
-              chatPartner={selectedContact}
-              onBack={() => setSelectedContact(null)}
-              onCall={() => handleCall(selectedContact)}
+              peer={selectedPeer}
+              onBack={() => setSelectedPeer(null)}
+              onCall={() => handleCall(selectedPeer)}
+              sendMessage={sendMessage}
+              sendTyping={sendTyping}
+              markAsSeen={markAsSeen}
+              isPartnerTyping={typingPeers.has(selectedPeer.id)}
+              newMessage={latestMessage}
             />
           ) : (
             <EmptyChat />
