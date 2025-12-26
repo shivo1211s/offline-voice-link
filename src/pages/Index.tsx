@@ -50,6 +50,7 @@ const Index = () => {
     sendTyping,
     markAsSeen,
     initiateCall,
+    answerCall,
     endCall,
     localStream,
     remoteStream,
@@ -110,7 +111,9 @@ const Index = () => {
   };
 
   const handleAcceptCall = () => {
-    // Call is accepted - WebRTC connection is already being established
+    if (activeCall) {
+      answerCall(activeCall.peer.id);
+    }
   };
 
   const handleDisconnect = () => {
