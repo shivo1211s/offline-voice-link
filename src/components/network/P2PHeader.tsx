@@ -1,7 +1,7 @@
 import { LocalProfile } from '@/types/p2p';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { LogOut, Settings, Wifi } from 'lucide-react';
+import { LogOut, Trash2, Wifi } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,6 +16,7 @@ interface P2PHeaderProps {
   hostAddress: string;
   onDisconnect: () => void;
   onLogout: () => void;
+  onResetCache?: () => void;
 }
 
 export function P2PHeader({
@@ -24,6 +25,7 @@ export function P2PHeader({
   hostAddress,
   onDisconnect,
   onLogout,
+  onResetCache,
 }: P2PHeaderProps) {
   return (
     <header className="flex items-center justify-between px-4 py-3 border-b border-border glass-panel">
@@ -70,6 +72,12 @@ export function P2PHeader({
             <Wifi className="w-4 h-4 mr-2" />
             Disconnect
           </DropdownMenuItem>
+          {onResetCache && (
+            <DropdownMenuItem onClick={onResetCache} className="cursor-pointer text-amber-600">
+              <Trash2 className="w-4 h-4 mr-2" />
+              Reset Cache
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem onClick={onLogout} className="cursor-pointer text-destructive">
             <LogOut className="w-4 h-4 mr-2" />
             Logout

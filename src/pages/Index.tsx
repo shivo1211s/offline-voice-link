@@ -10,6 +10,8 @@ import { EmptyChat } from '@/components/chat/EmptyChat';
 import { InstallPrompt } from '@/components/InstallPrompt';
 import { Peer, P2PMessage } from '@/types/p2p';
 import { Loader2 } from 'lucide-react';
+import { clearAllData } from '@/lib/storage';
+import { toast } from 'sonner';
 
 const Index = () => {
   const { profile, loading: profileLoading, createProfile, logout } = useLocalProfile();
@@ -122,6 +124,17 @@ const Index = () => {
     setSelectedPeer(null);
   };
 
+  const handleResetCache = async () => {
+    try {
+      await clearAllData();
+      toast.success('Network cache cleared');
+      window.location.reload();
+    } catch (error) {
+      toast.error('Failed to clear cache');
+      console.error('[Index] Reset cache error:', error);
+    }
+  };
+
   // Call screen overlay
   if (activeCall) {
     return (
@@ -145,6 +158,7 @@ const Index = () => {
         hostAddress={myIp}
         onDisconnect={handleDisconnect}
         onLogout={logout}
+        onResetCache={handleResetCache}
       />
       
       <div className="flex-1 flex overflow-hidden min-h-0">
