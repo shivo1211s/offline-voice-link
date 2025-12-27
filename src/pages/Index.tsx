@@ -47,6 +47,7 @@ const Index = () => {
     myIp,
     isScanning,
     refreshPeers,
+    connectToIp,
     goOnline,
     goOffline,
     sendMessage,
@@ -135,6 +136,16 @@ const Index = () => {
     }
   };
 
+  const handleManualConnect = async (ip: string): Promise<boolean> => {
+    const success = await connectToIp(ip);
+    if (success) {
+      toast.success(`Connecting to ${ip}...`);
+    } else {
+      toast.error(`Failed to connect to ${ip}`);
+    }
+    return success;
+  };
+
   // Call screen overlay
   if (activeCall) {
     return (
@@ -176,6 +187,7 @@ const Index = () => {
             hostAddress={myIp}
             onRefresh={refreshPeers}
             isRefreshing={isScanning}
+            onManualConnect={handleManualConnect}
           />
         </div>
 
