@@ -79,6 +79,17 @@ export class LanDiscoveryWeb extends WebPlugin implements LanDiscoveryPlugin {
     return { ip: '127.0.0.1' };
   }
 
+  async getDeviceId(): Promise<{ deviceId: string; deviceName: string }> {
+    // Web fallback: Use stored ID or create new one
+    let deviceId = localStorage.getItem('device_id');
+    if (!deviceId) {
+      deviceId = crypto.randomUUID();
+      localStorage.setItem('device_id', deviceId);
+    }
+    const deviceName = navigator.userAgent.includes('Mobile') ? 'Mobile Browser' : 'Desktop Browser';
+    return { deviceId, deviceName };
+  }
+
   private setupBroadcastListener() {
     if (!this.broadcastChannel) return;
     

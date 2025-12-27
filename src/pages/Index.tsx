@@ -44,6 +44,7 @@ const Index = () => {
     isConnected,
     myIp,
     isScanning,
+    refreshPeers,
     goOnline,
     goOffline,
     sendMessage,
@@ -159,6 +160,8 @@ const Index = () => {
             onSelectPeer={setSelectedPeer}
             isHost={true}
             hostAddress={myIp}
+            onRefresh={refreshPeers}
+            isRefreshing={isScanning}
           />
         </div>
 

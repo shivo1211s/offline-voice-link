@@ -368,6 +368,19 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
       await LanDiscovery.addListener('peerFound', async (discoveredPeer: DiscoveredPeer) => {
         console.log('[usePeerNetwork] Peer found:', discoveredPeer);
         
+        // FILTER: Skip invalid IPs
+        if (!discoveredPeer.ip || discoveredPeer.ip === '0.0.0.0' || discoveredPeer.ip === '127.0.0.1') {
+          console.log('[usePeerNetwork] Skipping invalid IP:', discoveredPeer.ip);
+          return;
+        }
+        
+        // FILTER: Skip if this is our own IP (self-discovery protection)
+        const currentIp = myIp || (await LanDiscovery.getLocalIp()).ip;
+        if (discoveredPeer.ip === currentIp) {
+          console.log('[usePeerNetwork] Skipping self-discovery:', discoveredPeer.ip);
+          return;
+        }
+        
         try {
           const result = await WebSocketServer.connectToPeer({
             ip: discoveredPeer.ip,
@@ -385,9 +398,20 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
             lastSeen: new Date(),
           };
 
+          // DEDUPE: Use IP as unique key - one entry per IP address
           setPeers(prev => {
-            const exists = prev.find(p => p.id === discoveredPeer.id);
-            if (exists) {
+            // Check if peer with same IP already exists
+            const existingByIp = prev.find(p => p.ip === discoveredPeer.ip);
+            if (existingByIp) {
+              // Update existing entry
+              return prev.map(p => p.ip === discoveredPeer.ip 
+                ? { ...p, isOnline: true, username: discoveredPeer.name.split('-')[0], id: discoveredPeer.id } 
+                : p
+              );
+            }
+            // Check if peer with same ID exists (update it)
+            const existsById = prev.find(p => p.id === discoveredPeer.id);
+            if (existsById) {
               return prev.map(p => p.id === discoveredPeer.id ? { ...p, isOnline: true, ip: discoveredPeer.ip } : p);
             }
             return [...prev, newPeer];
@@ -397,13 +421,13 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
 
           setTimeout(async () => {
             if (profile) {
-              const currentIp = myIp || (await LanDiscovery.getLocalIp()).ip;
+              const latestIp = myIp || (await LanDiscovery.getLocalIp()).ip;
               sendToPeer(discoveredPeer.id, {
                 type: 'join',
                 from: profile.id,
                 payload: {
                   username: profile.username,
-                  ip: currentIp,
+                  ip: latestIp,
                   avatarUrl: profile.avatarUrl,
                 },
               });
@@ -457,6 +481,34 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     peerConnectionsRef.current.clear();
   }, [profile, broadcast, clearAllMappings]);
 
+  // Refresh peer list - manually re-scan the network
+  const refreshPeers = useCallback(async () => {
+    if (!profile || !isConnected) return;
+    
+    setIsScanning(true);
+    console.log('[usePeerNetwork] Refreshing peer list...');
+    
+    try {
+      // Get current IP first
+      const { ip } = await LanDiscovery.getLocalIp();
+      setMyIp(ip);
+      
+      // Stop current discovery
+      await LanDiscovery.stopDiscovery();
+      
+      // Small delay before restarting
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+      // Restart discovery to find new peers
+      await LanDiscovery.startDiscovery({ serviceType: '_lanchat._tcp.' });
+      
+      console.log('[usePeerNetwork] Refresh complete, discovery restarted');
+    } catch (error) {
+      console.error('[usePeerNetwork] Refresh error:', error);
+    } finally {
+      setIsScanning(false);
+    }
+  }, [profile, isConnected]);
   // Send a message
   const sendMessage = useCallback(async (receiverId: string, content: string): Promise<P2PMessage> => {
     if (!profile) throw new Error('No profile');
@@ -605,6 +657,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     hostAddress: myIp,
     myIp,
     isScanning,
+    refreshPeers,
     startHost: goOnline,
     joinNetwork: goOnline,
     goOnline,

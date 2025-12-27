@@ -26,6 +26,9 @@ export interface LanDiscoveryPlugin {
   // Get this device's local IP address
   getLocalIp(): Promise<{ ip: string }>;
   
+  // Get persistent device identifier (ANDROID_ID) and device name
+  getDeviceId(): Promise<{ deviceId: string; deviceName: string }>;
+  
   // Add listener for peer discovery events
   addListener(
     eventName: 'peerFound' | 'peerLost',
