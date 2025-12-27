@@ -268,19 +268,35 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
           updateMessageStatus(message.payload.messageId, 'seen');
           break;
         case 'join':
-          // Use the IP from the WebSocket connection (clientId) if the payload IP is invalid
-          let peerIp = message.payload.ip;
-          if (!peerIp || peerIp === '0.0.0.0' || peerIp === '127.0.0.1') {
-            // Extract IP from clientId (format: "/IP:PORT" or "IP:PORT")
-            if (clientId) {
-              const cleanedClientId = clientId.replace(/^\//, '');
-              peerIp = cleanedClientId.split(':')[0];
+          // PRIORITY 1: Extract IP from clientId (WebSocket connection) - this is the real IP
+          let peerIp: string | null = null;
+          if (clientId) {
+            const cleanedClientId = clientId.replace(/^\//, '');
+            const extractedIp = cleanedClientId.split(':')[0];
+            if (extractedIp && extractedIp !== '0.0.0.0' && extractedIp !== '127.0.0.1') {
+              peerIp = extractedIp;
+              console.log('[usePeerNetwork] Using IP from clientId:', peerIp);
             }
           }
           
-          // Skip if still invalid
-          if (!peerIp || peerIp === '0.0.0.0' || peerIp === '127.0.0.1') {
-            console.log('[usePeerNetwork] Skipping join with invalid IP:', peerIp);
+          // PRIORITY 2: Check existing mDNS discovered peer
+          if (!peerIp) {
+            const existingPeer = peers.find(p => p.id === message.from && p.ip && p.ip !== '0.0.0.0');
+            if (existingPeer) {
+              peerIp = existingPeer.ip;
+              console.log('[usePeerNetwork] Using existing peer IP:', peerIp);
+            }
+          }
+          
+          // PRIORITY 3: Use payload IP if valid
+          if (!peerIp && message.payload.ip && message.payload.ip !== '0.0.0.0' && message.payload.ip !== '127.0.0.1') {
+            peerIp = message.payload.ip;
+            console.log('[usePeerNetwork] Using payload IP:', peerIp);
+          }
+          
+          // Skip if still no valid IP
+          if (!peerIp) {
+            console.log('[usePeerNetwork] Skipping join - no valid IP found');
             break;
           }
           
@@ -297,17 +313,22 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
             updateFromJoinMessage(message.from, peerIp, clientId);
           }
           
+          // Strong IP-based deduplication
           setPeers(prev => {
-            // Dedupe by IP first
-            const existsByIp = prev.find(p => p.ip === peerIp);
-            if (existsByIp) {
-              return prev.map(p => p.ip === peerIp ? { ...p, ...joinedPeer } : p);
+            // Remove any stale entries with same profile ID but different IP
+            const filtered = prev.filter(p => p.id !== message.from);
+            
+            // Check if peer with same IP already exists
+            const existingByIp = filtered.find(p => p.ip === peerIp);
+            if (existingByIp) {
+              // Merge: update existing entry with new data
+              return filtered.map(p => p.ip === peerIp 
+                ? { ...p, ...joinedPeer, username: message.payload.username || p.username } 
+                : p
+              );
             }
-            const existsById = prev.find(p => p.id === message.from);
-            if (existsById) {
-              return prev.map(p => p.id === message.from ? { ...p, ...joinedPeer } : p);
-            }
-            return [...prev, joinedPeer];
+            
+            return [...filtered, joinedPeer];
           });
           savePeer(joinedPeer);
           
