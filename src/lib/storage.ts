@@ -153,11 +153,23 @@ export async function getPeers(): Promise<Peer[]> {
     const tx = database.transaction('peers', 'readonly');
     const request = tx.objectStore('peers').getAll();
     request.onsuccess = () => {
-      const peers = request.result.map((p: any) => ({
+      const peers = (request.result as any[]).map((p: any) => ({
         ...p,
-        lastSeen: new Date(p.lastSeen)
+        lastSeen: new Date(p.lastSeen),
       }));
-      resolve(peers);
+
+      // Remove duplicates from older versions (when peer IDs differed between discovery and join)
+      // Prefer stable deviceId (Android ID) if present, otherwise fall back to IP.
+      const byKey = new Map<string, Peer>();
+      for (const p of peers) {
+        const key = p.deviceId || p.ip || p.id;
+        const existing = byKey.get(key);
+        if (!existing || p.lastSeen.getTime() > existing.lastSeen.getTime()) {
+          byKey.set(key, p);
+        }
+      }
+
+      resolve(Array.from(byKey.values()));
     };
     request.onerror = () => reject(request.error);
   });
