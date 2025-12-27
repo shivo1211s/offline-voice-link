@@ -3,7 +3,6 @@ import { Peer, P2PMessage, SignalingMessage, LocalProfile } from '@/types/p2p';
 import { saveMessage, getMessages, updateMessageStatus, savePeer, getPeers } from '@/lib/storage';
 import LanDiscovery, { DiscoveredPeer } from '@/plugins/LanDiscovery';
 import WebSocketServer from '@/plugins/WebSocketServer';
-import { usePeerClientMapping } from './usePeerClientMapping';
 
 interface UsePeerNetworkProps {
   profile: LocalProfile | null;
@@ -23,17 +22,12 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
+  const pendingCallOffersRef = useRef<Map<string, RTCSessionDescriptionInit>>(new Map());
 
-  // Use the peer-client mapping hook
-  const {
-    registerPeerConnection,
-    updateFromJoinMessage,
-    getClientIdForPeer,
-    getPeerIdForClient,
-    removePeerMapping,
-    clearAllMappings,
-    debugGetAllMappings,
-  } = usePeerClientMapping();
+  // Peer-client mapping refs (inline instead of separate hook to avoid hook count issues)
+  const peerIdToClientIdRef = useRef<Map<string, string>>(new Map());
+  const clientIdToPeerIdRef = useRef<Map<string, string>>(new Map());
+  const ipToPeerIdRef = useRef<Map<string, string>>(new Map());
 
   // Initialize network discovery and WebSocket server
   useEffect(() => {
@@ -43,11 +37,9 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
 
     const initialize = async () => {
       try {
-        // Get local IP
         const { ip } = await LanDiscovery.getLocalIp();
         if (!cleanup) setMyIp(ip);
         
-        // Load cached peers
         const cachedPeers = await getPeers();
         if (!cleanup && cachedPeers.length > 0) {
           setPeers(cachedPeers.map(p => ({ ...p, isOnline: false })));
@@ -58,14 +50,72 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     };
 
     initialize();
-
-    return () => {
-      cleanup = true;
-    };
+    return () => { cleanup = true; };
   }, [profile]);
 
-  // Store pending call offers to handle WebRTC signaling
-  const pendingCallOffersRef = useRef<Map<string, RTCSessionDescriptionInit>>(new Map());
+  // Mapping helper functions (not hooks, just regular functions using refs)
+  const registerPeerConnection = useCallback((peerId: string, clientId: string, ip?: string) => {
+    console.log('[PeerMapping] Registering:', peerId, '↔', clientId, 'ip:', ip);
+    peerIdToClientIdRef.current.set(peerId, clientId);
+    clientIdToPeerIdRef.current.set(clientId, peerId);
+    if (ip) {
+      ipToPeerIdRef.current.set(ip, peerId);
+    }
+  }, []);
+
+  const updateFromJoinMessage = useCallback((profileId: string, ip: string, clientId?: string) => {
+    console.log('[PeerMapping] Updating from join:', profileId, 'ip:', ip, 'clientId:', clientId);
+    if (clientId) {
+      peerIdToClientIdRef.current.set(profileId, clientId);
+      clientIdToPeerIdRef.current.set(clientId, profileId);
+    }
+    ipToPeerIdRef.current.set(ip, profileId);
+    
+    for (const [existingClientId] of clientIdToPeerIdRef.current.entries()) {
+      if (existingClientId.includes(ip)) {
+        clientIdToPeerIdRef.current.set(existingClientId, profileId);
+        peerIdToClientIdRef.current.set(profileId, existingClientId);
+      }
+    }
+  }, []);
+
+  const getClientIdForPeer = useCallback((peerId: string): string | undefined => {
+    return peerIdToClientIdRef.current.get(peerId);
+  }, []);
+
+  const getPeerIdForClient = useCallback((clientId: string): string | undefined => {
+    return clientIdToPeerIdRef.current.get(clientId);
+  }, []);
+
+  const removePeerMapping = useCallback((peerId: string) => {
+    const clientId = peerIdToClientIdRef.current.get(peerId);
+    if (clientId) {
+      clientIdToPeerIdRef.current.delete(clientId);
+    }
+    peerIdToClientIdRef.current.delete(peerId);
+    for (const [ip, id] of ipToPeerIdRef.current.entries()) {
+      if (id === peerId) {
+        ipToPeerIdRef.current.delete(ip);
+        break;
+      }
+    }
+  }, []);
+
+  const clearAllMappings = useCallback(() => {
+    peerIdToClientIdRef.current.clear();
+    clientIdToPeerIdRef.current.clear();
+    ipToPeerIdRef.current.clear();
+  }, []);
+
+  // Broadcast to all connected peers
+  const broadcast = useCallback(async (message: SignalingMessage) => {
+    try {
+      console.log('[usePeerNetwork] Broadcasting:', message.type);
+      await WebSocketServer.broadcast({ data: JSON.stringify(message) });
+    } catch (error) {
+      console.log('[usePeerNetwork] Broadcast error:', error);
+    }
+  }, []);
 
   // Send message to a specific peer using their profile ID
   const sendToPeer = useCallback(async (peerId: string, message: SignalingMessage) => {
@@ -77,9 +127,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
         await WebSocketServer.send({ clientId, data: JSON.stringify(message) });
         return true;
       } else {
-        // Fallback to broadcast if no direct mapping
         console.log('[usePeerNetwork] No clientId for peer:', peerId, 'falling back to broadcast');
-        console.log('[usePeerNetwork] Current mappings:', debugGetAllMappings());
         await WebSocketServer.broadcast({ data: JSON.stringify(message) });
         return true;
       }
@@ -87,194 +135,10 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
       console.error('[usePeerNetwork] sendToPeer error:', error);
       return false;
     }
-  }, [getClientIdForPeer, debugGetAllMappings]);
+  }, [getClientIdForPeer]);
 
-  // Handle incoming WebSocket messages
-  const handleIncomingData = useCallback((data: string, clientId?: string) => {
-    try {
-      const message: SignalingMessage = JSON.parse(data);
-      console.log('[usePeerNetwork] Received message:', message.type, 'from:', message.from, 'clientId:', clientId);
-      
-      if (!profile) {
-        console.log('[usePeerNetwork] No profile, ignoring message');
-        return;
-      }
-      
-      // Don't process our own messages
-      if (message.from === profile.id) {
-        console.log('[usePeerNetwork] Ignoring own message');
-        return;
-      }
-      
-      // Only filter targeted messages (with 'to' field) that aren't for us
-      if (message.to && message.to !== profile.id) {
-        console.log('[usePeerNetwork] Message not for us, to:', message.to);
-        return;
-      }
-
-      // If we have a clientId, update the mapping
-      if (clientId && message.from) {
-        const ip = clientId.split(':')[0].replace(/^\//, ''); // Extract IP from clientId like "/192.168.1.5:54321"
-        updateFromJoinMessage(message.from, ip, clientId);
-      }
-
-      switch (message.type) {
-        case 'message':
-          console.log('[usePeerNetwork] Processing incoming chat message');
-          handleIncomingMessage(message.payload, message.from);
-          break;
-        case 'typing':
-          onTyping?.(message.from, message.payload.isTyping);
-          break;
-        case 'delivered':
-          updateMessageStatus(message.payload.messageId, 'delivered');
-          break;
-        case 'seen':
-          updateMessageStatus(message.payload.messageId, 'seen');
-          break;
-        case 'join':
-          // Handle peer joining - add/update peer in list and update mapping
-          console.log('[usePeerNetwork] Peer joined:', message.payload);
-          const joinedPeer: Peer = {
-            id: message.from,
-            username: message.payload.username,
-            ip: message.payload.ip,
-            isOnline: true,
-            lastSeen: new Date(),
-            avatarUrl: message.payload.avatarUrl,
-          };
-          
-          // Update the peer-client mapping with the profile info
-          if (clientId) {
-            updateFromJoinMessage(message.from, message.payload.ip, clientId);
-          }
-          
-          setPeers(prev => {
-            const exists = prev.find(p => p.id === message.from);
-            if (exists) {
-              return prev.map(p => p.id === message.from ? { ...p, ...joinedPeer } : p);
-            }
-            return [...prev, joinedPeer];
-          });
-          savePeer(joinedPeer);
-          
-          // Send our own join message back so they know who we are
-          if (profile) {
-            sendToPeer(message.from, {
-              type: 'join',
-              from: profile.id,
-              to: message.from,
-              payload: {
-                username: profile.username,
-                ip: myIp,
-                avatarUrl: profile.avatarUrl,
-              },
-            });
-          }
-          break;
-        case 'leave':
-          setPeers(prev => prev.map(p => 
-            p.id === message.from ? { ...p, isOnline: false, lastSeen: new Date() } : p
-          ));
-          removePeerMapping(message.from);
-          break;
-        case 'call-offer':
-          console.log('[usePeerNetwork] Received call offer from:', message.from);
-          const callerPeer = peers.find(p => p.id === message.from);
-          if (callerPeer && message.payload.sdp) {
-            // Store the SDP for answering
-            pendingCallOffersRef.current.set(message.from, message.payload.sdp);
-            onCallOffer?.(callerPeer);
-          }
-          break;
-        case 'call-answer':
-          console.log('[usePeerNetwork] Received call answer from:', message.from);
-          handleCallAnswer(message);
-          break;
-        case 'call-end':
-          console.log('[usePeerNetwork] Call ended by:', message.from);
-          handleCallEnd(message.from);
-          break;
-        case 'ice-candidate':
-          handleWebRTCSignaling(message);
-          break;
-      }
-    } catch (error) {
-      console.error('[usePeerNetwork] Error parsing message:', error);
-    }
-  }, [profile, peers, myIp, onTyping, onCallOffer, updateFromJoinMessage, removePeerMapping, sendToPeer]);
-
-  const handleIncomingMessage = useCallback((messageData: any, senderId: string) => {
-    const message: P2PMessage = {
-      ...messageData,
-      timestamp: new Date(messageData.timestamp),
-      status: 'delivered',
-    };
-
-    saveMessage(message);
-    onMessage?.(message);
-
-    // Send delivered confirmation directly to the sender
-    if (profile) {
-      sendToPeer(senderId, {
-        type: 'delivered',
-        from: profile.id,
-        to: senderId,
-        payload: { messageId: message.id },
-      });
-    }
-  }, [profile, onMessage, sendToPeer]);
-
-  const handleWebRTCSignaling = useCallback(async (message: SignalingMessage) => {
-    const peerId = message.from;
-    let pc = peerConnectionsRef.current.get(peerId);
-
-    if (!pc) {
-      pc = createPeerConnection(peerId);
-      peerConnectionsRef.current.set(peerId, pc);
-    }
-
-    try {
-      if (message.type === 'ice-candidate' && message.payload) {
-        console.log('[usePeerNetwork] Adding ICE candidate from:', peerId);
-        await pc.addIceCandidate(new RTCIceCandidate(message.payload));
-      }
-    } catch (error) {
-      console.error('[usePeerNetwork] WebRTC signaling error:', error);
-    }
-  }, [profile]);
-
-  const handleCallAnswer = useCallback(async (message: SignalingMessage) => {
-    const peerId = message.from;
-    const pc = peerConnectionsRef.current.get(peerId);
-    
-    if (pc && message.payload.sdp) {
-      try {
-        console.log('[usePeerNetwork] Setting remote description from call answer');
-        await pc.setRemoteDescription(new RTCSessionDescription(message.payload.sdp));
-      } catch (error) {
-        console.error('[usePeerNetwork] Error handling call answer:', error);
-      }
-    }
-  }, []);
-
-  const handleCallEnd = useCallback((peerId: string) => {
-    // Stop local stream
-    localStreamRef.current?.getTracks().forEach(track => track.stop());
-    localStreamRef.current = null;
-    remoteStreamRef.current = null;
-    
-    // Close peer connection
-    const pc = peerConnectionsRef.current.get(peerId);
-    if (pc) {
-      pc.close();
-      peerConnectionsRef.current.delete(peerId);
-    }
-    
-    pendingCallOffersRef.current.delete(peerId);
-  }, []);
-
-  const createPeerConnection = (peerId: string): RTCPeerConnection => {
+  // Create WebRTC peer connection
+  const createPeerConnection = useCallback((peerId: string): RTCPeerConnection => {
     const pc = new RTCPeerConnection({
       iceServers: [] // No STUN/TURN needed for LAN
     });
@@ -295,40 +159,179 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     };
 
     return pc;
-  };
+  }, [profile, sendToPeer]);
 
-  const broadcast = useCallback(async (message: SignalingMessage) => {
-    try {
-      console.log('[usePeerNetwork] Broadcasting:', message.type, 'to:', message.to || 'all');
-      await WebSocketServer.broadcast({ data: JSON.stringify(message) });
-      console.log('[usePeerNetwork] Broadcast sent successfully');
-    } catch (error) {
-      console.log('[usePeerNetwork] Broadcast error:', error);
+  const handleCallEnd = useCallback((peerId: string) => {
+    localStreamRef.current?.getTracks().forEach(track => track.stop());
+    localStreamRef.current = null;
+    remoteStreamRef.current = null;
+    
+    const pc = peerConnectionsRef.current.get(peerId);
+    if (pc) {
+      pc.close();
+      peerConnectionsRef.current.delete(peerId);
+    }
+    pendingCallOffersRef.current.delete(peerId);
+  }, []);
+
+  const handleCallAnswer = useCallback(async (message: SignalingMessage) => {
+    const peerId = message.from;
+    const pc = peerConnectionsRef.current.get(peerId);
+    
+    if (pc && message.payload.sdp) {
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(message.payload.sdp));
+      } catch (error) {
+        console.error('[usePeerNetwork] Error handling call answer:', error);
+      }
     }
   }, []);
 
-  // Go online - start advertising and discovery
+  const handleWebRTCSignaling = useCallback(async (message: SignalingMessage) => {
+    const peerId = message.from;
+    let pc = peerConnectionsRef.current.get(peerId);
+
+    if (!pc) {
+      pc = createPeerConnection(peerId);
+      peerConnectionsRef.current.set(peerId, pc);
+    }
+
+    try {
+      if (message.type === 'ice-candidate' && message.payload) {
+        await pc.addIceCandidate(new RTCIceCandidate(message.payload));
+      }
+    } catch (error) {
+      console.error('[usePeerNetwork] WebRTC signaling error:', error);
+    }
+  }, [createPeerConnection]);
+
+  const handleIncomingMessage = useCallback((messageData: any, senderId: string) => {
+    const message: P2PMessage = {
+      ...messageData,
+      timestamp: new Date(messageData.timestamp),
+      status: 'delivered',
+    };
+
+    saveMessage(message);
+    onMessage?.(message);
+
+    if (profile) {
+      sendToPeer(senderId, {
+        type: 'delivered',
+        from: profile.id,
+        to: senderId,
+        payload: { messageId: message.id },
+      });
+    }
+  }, [profile, onMessage, sendToPeer]);
+
+  // Handle incoming WebSocket messages
+  const handleIncomingData = useCallback((data: string, clientId?: string) => {
+    try {
+      const message: SignalingMessage = JSON.parse(data);
+      console.log('[usePeerNetwork] Received:', message.type, 'from:', message.from);
+      
+      if (!profile || message.from === profile.id) return;
+      if (message.to && message.to !== profile.id) return;
+
+      if (clientId && message.from) {
+        const ip = clientId.split(':')[0].replace(/^\//, '');
+        updateFromJoinMessage(message.from, ip, clientId);
+      }
+
+      switch (message.type) {
+        case 'message':
+          handleIncomingMessage(message.payload, message.from);
+          break;
+        case 'typing':
+          onTyping?.(message.from, message.payload.isTyping);
+          break;
+        case 'delivered':
+          updateMessageStatus(message.payload.messageId, 'delivered');
+          break;
+        case 'seen':
+          updateMessageStatus(message.payload.messageId, 'seen');
+          break;
+        case 'join':
+          const joinedPeer: Peer = {
+            id: message.from,
+            username: message.payload.username,
+            ip: message.payload.ip,
+            isOnline: true,
+            lastSeen: new Date(),
+            avatarUrl: message.payload.avatarUrl,
+          };
+          
+          if (clientId) {
+            updateFromJoinMessage(message.from, message.payload.ip, clientId);
+          }
+          
+          setPeers(prev => {
+            const exists = prev.find(p => p.id === message.from);
+            if (exists) {
+              return prev.map(p => p.id === message.from ? { ...p, ...joinedPeer } : p);
+            }
+            return [...prev, joinedPeer];
+          });
+          savePeer(joinedPeer);
+          
+          if (profile && myIp) {
+            sendToPeer(message.from, {
+              type: 'join',
+              from: profile.id,
+              to: message.from,
+              payload: {
+                username: profile.username,
+                ip: myIp,
+                avatarUrl: profile.avatarUrl,
+              },
+            });
+          }
+          break;
+        case 'leave':
+          setPeers(prev => prev.map(p => 
+            p.id === message.from ? { ...p, isOnline: false, lastSeen: new Date() } : p
+          ));
+          removePeerMapping(message.from);
+          break;
+        case 'call-offer':
+          const callerPeer = peers.find(p => p.id === message.from);
+          if (callerPeer && message.payload.sdp) {
+            pendingCallOffersRef.current.set(message.from, message.payload.sdp);
+            onCallOffer?.(callerPeer);
+          }
+          break;
+        case 'call-answer':
+          handleCallAnswer(message);
+          break;
+        case 'call-end':
+          handleCallEnd(message.from);
+          break;
+        case 'ice-candidate':
+          handleWebRTCSignaling(message);
+          break;
+      }
+    } catch (error) {
+      console.error('[usePeerNetwork] Error parsing message:', error);
+    }
+  }, [profile, peers, myIp, onTyping, onCallOffer, updateFromJoinMessage, removePeerMapping, sendToPeer, handleIncomingMessage, handleCallAnswer, handleCallEnd, handleWebRTCSignaling]);
+
+  // Go online
   const goOnline = useCallback(async () => {
     if (!profile) return;
 
     try {
       setIsScanning(true);
-
-      // Start WebSocket server
       await WebSocketServer.start({ port: WS_PORT });
 
-      // Setup message listener - now includes clientId
       await WebSocketServer.addListener('messageReceived', (data) => {
         handleIncomingData(data.data, data.clientId);
       });
 
-      // Setup peer connection listener
       await WebSocketServer.addListener('clientConnected', async (data) => {
         console.log('[usePeerNetwork] Client connected:', data.clientId);
-        // Note: We'll get the profile mapping when they send a 'join' message
       });
 
-      // Setup peer disconnection listener
       await WebSocketServer.addListener('clientDisconnected', async (data) => {
         console.log('[usePeerNetwork] Client disconnected:', data.clientId);
         const peerId = getPeerIdForClient(data.clientId);
@@ -340,20 +343,16 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
         }
       });
 
-      // Start advertising our service
       await LanDiscovery.startAdvertising({
         serviceName: `${profile.username}-${profile.id.slice(0, 8)}`,
         port: WS_PORT
       });
 
-      // Start discovering other devices
       await LanDiscovery.startDiscovery({ serviceType: '_lanchat._tcp.' });
 
-      // Listen for discovered peers
       await LanDiscovery.addListener('peerFound', async (discoveredPeer: DiscoveredPeer) => {
         console.log('[usePeerNetwork] Peer found:', discoveredPeer);
         
-        // Connect to the peer's WebSocket server
         try {
           const result = await WebSocketServer.connectToPeer({
             ip: discoveredPeer.ip,
@@ -361,11 +360,8 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
           });
 
           const clientId = result.clientId || `${discoveredPeer.ip}:${discoveredPeer.port}`;
-          
-          // Register the initial mapping (mDNS ID → WebSocket clientId)
           registerPeerConnection(discoveredPeer.id, clientId, discoveredPeer.ip);
 
-          // Add to peer list
           const newPeer: Peer = {
             id: discoveredPeer.id,
             username: discoveredPeer.name.split('-')[0],
@@ -384,18 +380,19 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
 
           savePeer(newPeer);
 
-          // Wait a moment for the connection to be fully established
-          setTimeout(() => {
-            // Announce ourselves via the new connection
-            sendToPeer(discoveredPeer.id, {
-              type: 'join',
-              from: profile.id,
-              payload: {
-                username: profile.username,
-                ip: myIp,
-                avatarUrl: profile.avatarUrl,
-              },
-            });
+          setTimeout(async () => {
+            if (profile) {
+              const currentIp = myIp || (await LanDiscovery.getLocalIp()).ip;
+              sendToPeer(discoveredPeer.id, {
+                type: 'join',
+                from: profile.id,
+                payload: {
+                  username: profile.username,
+                  ip: currentIp,
+                  avatarUrl: profile.avatarUrl,
+                },
+              });
+            }
           }, 200);
         } catch (error) {
           console.error('[usePeerNetwork] Failed to connect to peer:', error);
@@ -413,27 +410,20 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
       setIsConnected(true);
       setIsScanning(false);
 
-      // Get local IP address
       const { ip } = await LanDiscovery.getLocalIp();
       setMyIp(ip);
 
     } catch (error) {
       console.error('[usePeerNetwork] Go online error:', error);
       setIsScanning(false);
-      
-      // Fallback for web testing - just set as connected
       setIsConnected(true);
     }
   }, [profile, myIp, handleIncomingData, registerPeerConnection, removePeerMapping, getPeerIdForClient, sendToPeer]);
 
-  // Go offline - stop everything
+  // Go offline
   const goOffline = useCallback(async () => {
     if (profile) {
-      broadcast({
-        type: 'leave',
-        from: profile.id,
-        payload: null,
-      });
+      broadcast({ type: 'leave', from: profile.id, payload: null });
     }
 
     try {
@@ -466,27 +456,20 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
       type: 'text',
     };
 
-    console.log('[usePeerNetwork] Sending message to:', receiverId, 'content:', content);
     await saveMessage(message);
-
-    // Use sendToPeer for targeted delivery
-    const sent = await sendToPeer(receiverId, {
+    await sendToPeer(receiverId, {
       type: 'message',
       from: profile.id,
       to: receiverId,
       payload: message,
     });
-
-    console.log('[usePeerNetwork] Message send result:', sent);
     await updateMessageStatus(message.id, 'sent');
     
     return { ...message, status: 'sent' };
   }, [profile, sendToPeer]);
 
-  // Send typing indicator
   const sendTyping = useCallback((receiverId: string, isTyping: boolean) => {
     if (!profile) return;
-
     sendToPeer(receiverId, {
       type: 'typing',
       from: profile.id,
@@ -495,13 +478,10 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     });
   }, [profile, sendToPeer]);
 
-  // Mark messages as seen
   const markAsSeen = useCallback((messageIds: string[], senderId: string) => {
     if (!profile) return;
-
     messageIds.forEach(messageId => {
       updateMessageStatus(messageId, 'seen');
-      
       sendToPeer(senderId, {
         type: 'seen',
         from: profile.id,
@@ -511,27 +491,22 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     });
   }, [profile, sendToPeer]);
 
-  // Initiate a call
   const initiateCall = useCallback(async (peerId: string) => {
     if (!profile) return;
 
     try {
-      // Get microphone access
       localStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
       
-      // Create peer connection for audio
       let pc = peerConnectionsRef.current.get(peerId);
       if (!pc) {
         pc = createPeerConnection(peerId);
         peerConnectionsRef.current.set(peerId, pc);
       }
 
-      // Add audio tracks
       localStreamRef.current.getTracks().forEach(track => {
         pc!.addTrack(track, localStreamRef.current!);
       });
 
-      // Create and send offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
@@ -539,48 +514,35 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
         type: 'call-offer',
         from: profile.id,
         to: peerId,
-        payload: { 
-          username: profile.username,
-          sdp: offer 
-        },
+        payload: { username: profile.username, sdp: offer },
       });
     } catch (error) {
       console.error('[usePeerNetwork] Call initiation error:', error);
     }
-  }, [profile, sendToPeer]);
+  }, [profile, sendToPeer, createPeerConnection]);
 
-  // Answer an incoming call
   const answerCall = useCallback(async (peerId: string) => {
     if (!profile) return;
 
     try {
-      console.log('[usePeerNetwork] Answering call from:', peerId);
-      
-      // Get microphone access
       localStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
       
-      // Create peer connection if needed
       let pc = peerConnectionsRef.current.get(peerId);
       if (!pc) {
         pc = createPeerConnection(peerId);
         peerConnectionsRef.current.set(peerId, pc);
       }
 
-      // Add audio tracks
       localStreamRef.current.getTracks().forEach(track => {
         pc!.addTrack(track, localStreamRef.current!);
       });
 
-      // Get the pending offer
       const offer = pendingCallOffersRef.current.get(peerId);
       if (offer) {
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
-        
-        // Create answer
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         
-        // Send answer
         await sendToPeer(peerId, {
           type: 'call-answer',
           from: profile.id,
@@ -589,31 +551,24 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
         });
         
         pendingCallOffersRef.current.delete(peerId);
-        console.log('[usePeerNetwork] Call answered successfully');
       }
     } catch (error) {
       console.error('[usePeerNetwork] Answer call error:', error);
     }
-  }, [profile, sendToPeer]);
+  }, [profile, sendToPeer, createPeerConnection]);
 
-  // End call
   const endCall = useCallback((peerId: string) => {
     if (!profile) return;
 
-    console.log('[usePeerNetwork] Ending call with:', peerId);
-    
-    // Stop local stream
     localStreamRef.current?.getTracks().forEach(track => track.stop());
     localStreamRef.current = null;
     remoteStreamRef.current = null;
 
-    // Close peer connection
     const pc = peerConnectionsRef.current.get(peerId);
     if (pc) {
       pc.close();
       peerConnectionsRef.current.delete(peerId);
     }
-    
     pendingCallOffersRef.current.delete(peerId);
 
     sendToPeer(peerId, {
@@ -624,23 +579,18 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     });
   }, [profile, sendToPeer]);
 
-  // For backward compatibility - aliases
-  const startHost = goOnline;
-  const joinNetwork = goOnline;
-  const disconnect = goOffline;
-
   return {
     peers,
-    isHost: true, // In mesh, everyone is equal
+    isHost: true,
     isConnected,
     hostAddress: myIp,
     myIp,
     isScanning,
-    startHost,
-    joinNetwork,
+    startHost: goOnline,
+    joinNetwork: goOnline,
     goOnline,
     goOffline,
-    disconnect,
+    disconnect: goOffline,
     sendMessage,
     sendTyping,
     markAsSeen,
