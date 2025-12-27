@@ -268,29 +268,50 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
           updateMessageStatus(message.payload.messageId, 'seen');
           break;
         case 'join':
+          // Use the IP from the WebSocket connection (clientId) if the payload IP is invalid
+          let peerIp = message.payload.ip;
+          if (!peerIp || peerIp === '0.0.0.0' || peerIp === '127.0.0.1') {
+            // Extract IP from clientId (format: "/IP:PORT" or "IP:PORT")
+            if (clientId) {
+              const cleanedClientId = clientId.replace(/^\//, '');
+              peerIp = cleanedClientId.split(':')[0];
+            }
+          }
+          
+          // Skip if still invalid
+          if (!peerIp || peerIp === '0.0.0.0' || peerIp === '127.0.0.1') {
+            console.log('[usePeerNetwork] Skipping join with invalid IP:', peerIp);
+            break;
+          }
+          
           const joinedPeer: Peer = {
             id: message.from,
             username: message.payload.username,
-            ip: message.payload.ip,
+            ip: peerIp,
             isOnline: true,
             lastSeen: new Date(),
             avatarUrl: message.payload.avatarUrl,
           };
           
           if (clientId) {
-            updateFromJoinMessage(message.from, message.payload.ip, clientId);
+            updateFromJoinMessage(message.from, peerIp, clientId);
           }
           
           setPeers(prev => {
-            const exists = prev.find(p => p.id === message.from);
-            if (exists) {
+            // Dedupe by IP first
+            const existsByIp = prev.find(p => p.ip === peerIp);
+            if (existsByIp) {
+              return prev.map(p => p.ip === peerIp ? { ...p, ...joinedPeer } : p);
+            }
+            const existsById = prev.find(p => p.id === message.from);
+            if (existsById) {
               return prev.map(p => p.id === message.from ? { ...p, ...joinedPeer } : p);
             }
             return [...prev, joinedPeer];
           });
           savePeer(joinedPeer);
           
-          if (profile && myIp) {
+          if (profile && myIp && myIp !== '0.0.0.0') {
             sendToPeer(message.from, {
               type: 'join',
               from: profile.id,
