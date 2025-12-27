@@ -4,6 +4,7 @@ export interface Peer {
   id: string;
   deviceId?: string;      // Persistent device identifier (ANDROID_ID)
   deviceName?: string;    // "Samsung Galaxy S21" for display
+  macAddress?: string;    // MAC address for unique identification
   username: string;
   ip: string;
   isOnline: boolean;

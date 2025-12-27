@@ -23,6 +23,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
   const [isScanning, setIsScanning] = useState(false);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [callError, setCallError] = useState<string | null>(null);
   
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const pendingCallOffersRef = useRef<Map<string, RTCSessionDescriptionInit>>(new Map());
@@ -116,6 +117,17 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     ipToPeerIdRef.current.clear();
   }, []);
 
+  // Helper to generate unique peer key for deduplication
+  // Priority: deviceId > IP > id (to handle duplicates correctly)
+  const getPeerUniqueKey = useCallback((peer: Peer): string => {
+    // Use deviceId as primary key if available (most stable on Android)
+    if (peer.deviceId) return `device:${peer.deviceId}`;
+    // Fall back to IP
+    if (peer.ip && peer.ip !== '0.0.0.0' && peer.ip !== '127.0.0.1') return `ip:${peer.ip}`;
+    // Fall back to id
+    return `id:${peer.id}`;
+  }, []);
+
   // Broadcast to all connected peers
   const broadcast = useCallback(async (message: SignalingMessage) => {
     try {
@@ -148,37 +160,88 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
 
   // Create WebRTC peer connection
   const createPeerConnection = useCallback((peerId: string): RTCPeerConnection => {
+    console.log('[WebRTC] Creating peer connection with STUN servers...');
     const pc = new RTCPeerConnection({
       iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }, // Fallback STUN for NAT traversal
-      ]
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+      ],
+      iceCandidatePoolSize: 10,
     });
+
+    let iceCandidateTimeout: NodeJS.Timeout | null = null;
 
     pc.onicecandidate = (event) => {
       if (event.candidate && profile) {
-        console.log('[WebRTC] ICE candidate:', event.candidate.candidate);
+        console.log('[WebRTC] 📤 ICE candidate:', event.candidate.candidate.substring(0, 80));
         sendToPeer(peerId, {
           type: 'ice-candidate',
           from: profile.id,
           to: peerId,
           payload: event.candidate,
         });
+        
+        // Reset timeout when new candidates come in
+        if (iceCandidateTimeout) clearTimeout(iceCandidateTimeout);
+      } else if (!event.candidate) {
+        console.log('[WebRTC] ✓ ICE candidate gathering complete');
+        iceCandidateTimeout = setTimeout(() => {
+          console.log('[WebRTC] ICE gathering timeout reached');
+        }, 5000);
       }
+    };
+
+    pc.onicegatheringstatechange = () => {
+      console.log('[WebRTC] 🔄 ICE gathering state:', pc.iceGatheringState);
     };
 
     pc.oniceconnectionstatechange = () => {
-      console.log('[WebRTC] ICE connection state:', pc.iceConnectionState);
+      console.log('[WebRTC] 🔌 ICE connection state:', pc.iceConnectionState);
+      if (pc.iceConnectionState === 'failed') {
+        console.error('[WebRTC] ❌ ICE connection failed');
+        setCallError('Connection failed: Unable to reach peer. Make sure both devices are on the same network.');
+      }
+      if (pc.iceConnectionState === 'disconnected') {
+        console.warn('[WebRTC] ⚠️ ICE connection disconnected');
+        setCallError('Connection lost. Attempting to reconnect...');
+      }
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        console.log('[WebRTC] ✓ ICE connection established');
+      }
     };
 
     pc.onconnectionstatechange = () => {
-      console.log('[WebRTC] Connection state:', pc.connectionState);
+      console.log('[WebRTC] 📡 Connection state:', pc.connectionState);
+      if (pc.connectionState === 'connected') {
+        console.log('[WebRTC] ✓ Peer connection established! Ready for audio.');
+        setCallError(null);
+      } else if (pc.connectionState === 'failed') {
+        console.error('[WebRTC] ❌ Peer connection failed');
+        setCallError('Call connection failed. Please try again.');
+      } else if (pc.connectionState === 'disconnected') {
+        console.warn('[WebRTC] ⚠️ Peer connection disconnected');
+      } else if (pc.connectionState === 'closed') {
+        console.log('[WebRTC] Call ended');
+      }
+    };
+
+    pc.onsignalingstatechange = () => {
+      console.log('[WebRTC] 🤝 Signaling state:', pc.signalingState);
     };
 
     pc.ontrack = (event) => {
-      console.log('[WebRTC] Remote track received:', event.track.kind);
+      console.log('[WebRTC] 🎧 Remote track received:', event.track.kind, 'state:', event.track.readyState);
       if (event.streams && event.streams[0]) {
+        console.log('[WebRTC] ✓ Remote stream ready with', event.streams[0].getTracks().length, 'tracks');
         setRemoteStream(event.streams[0]);
       }
+    };
+
+    pc.ondatachannel = (event) => {
+      console.log('[WebRTC] Data channel received:', event.channel.label);
     };
 
     return pc;
@@ -201,14 +264,20 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
 
   const handleCallAnswer = useCallback(async (message: SignalingMessage) => {
     const peerId = message.from;
+    console.log('[usePeerNetwork] Received call answer from:', peerId);
     const pc = peerConnectionsRef.current.get(peerId);
     
     if (pc && message.payload.sdp) {
       try {
+        console.log('[usePeerNetwork] Setting remote description for answer...');
         await pc.setRemoteDescription(new RTCSessionDescription(message.payload.sdp));
+        console.log('[usePeerNetwork] ✓ Remote description set from answer');
       } catch (error) {
         console.error('[usePeerNetwork] Error handling call answer:', error);
+        setCallError(`Failed to process call answer: ${error}`);
       }
+    } else {
+      console.warn('[usePeerNetwork] No peer connection or SDP for answer', { peerId, hasPc: !!pc, hasSdp: !!message.payload?.sdp });
     }
   }, []);
 
@@ -217,16 +286,23 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     let pc = peerConnectionsRef.current.get(peerId);
 
     if (!pc) {
+      console.log('[usePeerNetwork] Creating peer connection for ICE candidate from:', peerId);
       pc = createPeerConnection(peerId);
       peerConnectionsRef.current.set(peerId, pc);
     }
 
     try {
       if (message.type === 'ice-candidate' && message.payload) {
+        console.log('[usePeerNetwork] Adding ICE candidate from:', peerId, message.payload.candidate?.substring(0, 50));
         await pc.addIceCandidate(new RTCIceCandidate(message.payload));
       }
-    } catch (error) {
-      console.error('[usePeerNetwork] WebRTC signaling error:', error);
+    } catch (error: any) {
+      // Ignore duplicate/stale candidates
+      if (error?.message?.includes('duplicate')) {
+        console.log('[usePeerNetwork] Duplicate ICE candidate (expected):', peerId);
+      } else {
+        console.error('[usePeerNetwork] WebRTC signaling error:', error);
+      }
     }
   }, [createPeerConnection]);
 
@@ -328,32 +404,46 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
             updateFromJoinMessage(message.from, peerIp, clientId);
           }
 
-          // Deduplicate by stable deviceId (Android ID) when available, then by IP
+          // Deduplicate using deviceId as primary key
+          // If deviceId exists, use it to merge/update peer info
+          // Otherwise fall back to IP-based deduplication
           setPeers(prev => {
-            const filtered = prev.filter(p =>
-              p.id !== message.from &&
-              (!payloadDeviceId || p.deviceId !== payloadDeviceId)
-            );
-
+            // Priority 1: If deviceId exists, find and merge with same deviceId
             if (payloadDeviceId) {
-              const existingByDeviceId = filtered.find(p => p.deviceId === payloadDeviceId);
+              const existingByDeviceId = prev.find(p => p.deviceId === payloadDeviceId);
               if (existingByDeviceId) {
-                return filtered.map(p => p.deviceId === payloadDeviceId
-                  ? { ...p, ...joinedPeer, id: message.from }
-                  : p
+                console.log('[usePeerNetwork] Merging deviceId:', payloadDeviceId, 'old id:', existingByDeviceId.id, '→ new id:', message.from);
+                // Merge: keep new IP/username but preserve other device info
+                return prev.map(p => 
+                  p.deviceId === payloadDeviceId
+                    ? {
+                        ...p,
+                        ...joinedPeer,
+                        lastSeen: new Date(),
+                      }
+                    : p
                 );
               }
             }
 
-            const existingByIp = filtered.find(p => p.ip === peerIp);
+            // Priority 2: If IP exists, merge with same IP
+            const existingByIp = prev.find(p => p.ip === peerIp && peerIp !== '0.0.0.0');
             if (existingByIp) {
-              return filtered.map(p => p.ip === peerIp
-                ? { ...p, ...joinedPeer, username: message.payload.username || p.username }
-                : p
+              console.log('[usePeerNetwork] Merging IP:', peerIp, 'old id:', existingByIp.id, '→ new id:', message.from);
+              return prev.map(p =>
+                p.ip === peerIp
+                  ? {
+                      ...p,
+                      ...joinedPeer,
+                      lastSeen: new Date(),
+                    }
+                  : p
               );
             }
 
-            return [...filtered, joinedPeer];
+            // No existing peer found, add new one
+            console.log('[usePeerNetwork] Adding new peer:', message.from, 'deviceId:', payloadDeviceId);
+            return [...prev, joinedPeer];
           });
 
           savePeer(joinedPeer);
@@ -381,10 +471,14 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
           removePeerMapping(message.from);
           break;
         case 'call-offer':
+          console.log('[usePeerNetwork] Received call offer from:', message.from, 'has SDP:', !!message.payload?.sdp);
           const callerPeer = peers.find(p => p.id === message.from);
           if (callerPeer && message.payload.sdp) {
+            console.log('[usePeerNetwork] ✓ Storing call offer for answering');
             pendingCallOffersRef.current.set(message.from, message.payload.sdp);
             onCallOffer?.(callerPeer);
+          } else {
+            console.warn('[usePeerNetwork] Invalid call offer - no peer or SDP', { found: !!callerPeer, hasSdp: !!message.payload?.sdp });
           }
           break;
         case 'call-answer':
@@ -479,21 +573,27 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
             lastSeen: new Date(),
           };
 
-          // DEDUPE: Use IP as unique key - one entry per IP address
+          // Deduplicate using IP - merge with existing peer at same IP
           setPeers(prev => {
             const existingByIp = prev.find(p => p.ip === discoveredPeer.ip);
             if (existingByIp) {
-              return prev.map(p => p.ip === discoveredPeer.ip
-                ? { ...p, ...newPeer, id: peerId }
-                : p
+              console.log('[usePeerNetwork] Merging discovered peer IP:', discoveredPeer.ip, 'existing:', existingByIp.id, '→ new:', peerId);
+              // Merge: use the new peer info but keep any deviceId if already known
+              return prev.map(p =>
+                p.ip === discoveredPeer.ip
+                  ? {
+                      ...p,
+                      ...newPeer,
+                      deviceId: p.deviceId || newPeer.deviceId, // Keep existing deviceId
+                      deviceName: p.deviceName || newPeer.deviceName,
+                      avatarUrl: p.avatarUrl || newPeer.avatarUrl,
+                      lastSeen: new Date(),
+                    }
+                  : p
               );
             }
 
-            const existsById = prev.find(p => p.id === peerId);
-            if (existsById) {
-              return prev.map(p => p.id === peerId ? { ...p, ...newPeer } : p);
-            }
-
+            console.log('[usePeerNetwork] Adding discovered peer:', peerId, 'at', discoveredPeer.ip);
             return [...prev, newPeer];
           });
 
@@ -627,8 +727,10 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
       setPeers(prev => {
         const existingByIp = prev.find(p => p.ip === ip);
         if (existingByIp) {
-          return prev.map(p => p.ip === ip ? { ...p, isOnline: true } : p);
+          console.log('[usePeerNetwork] Updating existing peer at IP:', ip);
+          return prev.map(p => p.ip === ip ? { ...p, isOnline: true, lastSeen: new Date() } : p);
         }
+        console.log('[usePeerNetwork] Adding manual peer at IP:', ip);
         return [...prev, newPeer];
       });
 
@@ -709,68 +811,166 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
   const initiateCall = useCallback(async (peerId: string) => {
     if (!profile) return;
 
+    setCallError(null);
+    console.log('[usePeerNetwork] 📞 Initiating call with peer:', peerId);
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const audioConstraints: MediaAudioVideoConstraints = {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      };
+
+      console.log('[usePeerNetwork] 🎤 Requesting microphone access...');
+      const stream = await navigator.mediaDevices.getUserMedia(audioConstraints);
+      console.log('[usePeerNetwork] ✓ Microphone permission granted!');
+      console.log('[usePeerNetwork] Local audio tracks:', stream.getAudioTracks().length);
+      
+      stream.getTracks().forEach(track => {
+        console.log('[usePeerNetwork] 🎧 Local track:', track.kind, '| enabled:', track.enabled, '| state:', track.readyState);
+        track.enabled = true; // Ensure track is enabled
+      });
+
       setLocalStream(stream);
+      console.log('[usePeerNetwork] Local stream set:', stream.id);
       
       let pc = peerConnectionsRef.current.get(peerId);
       if (!pc) {
+        console.log('[usePeerNetwork] Creating new peer connection for', peerId);
         pc = createPeerConnection(peerId);
         peerConnectionsRef.current.set(peerId, pc);
       }
 
+      // Add all tracks to peer connection
       stream.getTracks().forEach(track => {
-        pc!.addTrack(track, stream);
+        console.log('[usePeerNetwork] Adding track to peer connection:', track.kind);
+        const sender = pc!.addTrack(track, stream);
+        console.log('[usePeerNetwork] ✓ Track added, sender:', sender.track?.kind);
       });
 
-      const offer = await pc.createOffer();
+      console.log('[usePeerNetwork] 📤 Creating SDP offer...');
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: false,
+      });
+      console.log('[usePeerNetwork] ✓ Offer created');
+      
+      console.log('[usePeerNetwork] 🔗 Setting local description...');
       await pc.setLocalDescription(offer);
+      console.log('[usePeerNetwork] ✓ Local description set');
 
-      sendToPeer(peerId, {
+      console.log('[usePeerNetwork] 📨 Sending call offer to peer:', peerId);
+      await sendToPeer(peerId, {
         type: 'call-offer',
         from: profile.id,
         to: peerId,
         payload: { username: profile.username, sdp: offer },
       });
-    } catch (error) {
-      console.error('[usePeerNetwork] Call initiation error:', error);
+      console.log('[usePeerNetwork] ✓ Call offer sent successfully');
+    } catch (error: any) {
+      let errorMsg = `Call initiation failed: ${error?.message || String(error)}`;
+      
+      if (error?.name === 'NotAllowedError') {
+        errorMsg = 'Microphone access denied. Please allow microphone access in your browser settings.';
+      } else if (error?.name === 'NotFoundError') {
+        errorMsg = 'No microphone found. Please connect a microphone device.';
+      } else if (error?.name === 'SecurityError') {
+        errorMsg = 'Security Error: Make sure you are using HTTPS or localhost.';
+      } else if (error?.name === 'TypeError') {
+        errorMsg = 'Browser does not support audio calling.';
+      }
+      
+      console.error('[usePeerNetwork] ❌ Call initiation error:', error?.name, error?.message);
+      setCallError(errorMsg);
     }
   }, [profile, sendToPeer, createPeerConnection]);
 
   const answerCall = useCallback(async (peerId: string) => {
     if (!profile) return;
 
+    setCallError(null);
+    console.log('[usePeerNetwork] 📞 Answering incoming call from:', peerId);
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const audioConstraints: MediaAudioVideoConstraints = {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      };
+
+      console.log('[usePeerNetwork] 🎤 Requesting microphone access...');
+      const stream = await navigator.mediaDevices.getUserMedia(audioConstraints);
+      console.log('[usePeerNetwork] ✓ Microphone permission granted!');
+      console.log('[usePeerNetwork] Local audio tracks:', stream.getAudioTracks().length);
+      
+      stream.getTracks().forEach(track => {
+        console.log('[usePeerNetwork] 🎧 Local track:', track.kind, '| enabled:', track.enabled, '| state:', track.readyState);
+        track.enabled = true; // Ensure track is enabled
+      });
+
       setLocalStream(stream);
+      console.log('[usePeerNetwork] Local stream set:', stream.id);
       
       let pc = peerConnectionsRef.current.get(peerId);
       if (!pc) {
+        console.log('[usePeerNetwork] Creating new peer connection for answer');
         pc = createPeerConnection(peerId);
         peerConnectionsRef.current.set(peerId, pc);
       }
 
+      // Add all tracks to peer connection
       stream.getTracks().forEach(track => {
-        pc!.addTrack(track, stream);
+        console.log('[usePeerNetwork] Adding track to peer connection:', track.kind);
+        const sender = pc!.addTrack(track, stream);
+        console.log('[usePeerNetwork] ✓ Track added, sender:', sender.track?.kind);
       });
 
       const offer = pendingCallOffersRef.current.get(peerId);
-      if (offer) {
-        await pc.setRemoteDescription(new RTCSessionDescription(offer));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        
-        await sendToPeer(peerId, {
-          type: 'call-answer',
-          from: profile.id,
-          to: peerId,
-          payload: { sdp: answer },
-        });
-        
-        pendingCallOffersRef.current.delete(peerId);
+      if (!offer) {
+        throw new Error('No pending call offer found');
       }
-    } catch (error) {
-      console.error('[usePeerNetwork] Answer call error:', error);
+
+      console.log('[usePeerNetwork] 🔗 Setting remote description with offer...');
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      console.log('[usePeerNetwork] ✓ Remote description set');
+      
+      console.log('[usePeerNetwork] 📤 Creating SDP answer...');
+      const answer = await pc.createAnswer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: false,
+      });
+      console.log('[usePeerNetwork] ✓ Answer created');
+      
+      console.log('[usePeerNetwork] 🔗 Setting local description...');
+      await pc.setLocalDescription(answer);
+      console.log('[usePeerNetwork] ✓ Local description set');
+      
+      console.log('[usePeerNetwork] 📨 Sending call answer to peer:', peerId);
+      await sendToPeer(peerId, {
+        type: 'call-answer',
+        from: profile.id,
+        to: peerId,
+        payload: { sdp: answer },
+      });
+      console.log('[usePeerNetwork] ✓ Call answer sent successfully');
+      pendingCallOffersRef.current.delete(peerId);
+    } catch (error: any) {
+      let errorMsg = `Call answer failed: ${error?.message || String(error)}`;
+      
+      if (error?.name === 'NotAllowedError') {
+        errorMsg = 'Microphone access denied. Please allow microphone access in your browser settings.';
+      } else if (error?.name === 'NotFoundError') {
+        errorMsg = 'No microphone found. Please connect a microphone device.';
+      } else if (error?.message === 'No pending call offer found') {
+        errorMsg = 'Call offer expired. Please ask the caller to try again.';
+      }
+      
+      console.error('[usePeerNetwork] ❌ Call answer error:', error?.name, error?.message);
+      setCallError(errorMsg);
     }
   }, [profile, sendToPeer, createPeerConnection]);
 
@@ -821,5 +1021,6 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     getMessages,
     localStream,
     remoteStream,
+    callError,
   };
 }

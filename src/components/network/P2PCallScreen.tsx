@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Peer } from '@/types/p2p';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { Phone, PhoneOff, Mic, MicOff, Volume2, VolumeX } from 'lucide-react';
+import { Phone, PhoneOff, Mic, MicOff, Volume2, VolumeX, AlertCircle } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 
 interface P2PCallScreenProps {
   peer: Peer;
@@ -12,6 +13,7 @@ interface P2PCallScreenProps {
   onReject: () => void;
   localStream?: MediaStream | null;
   remoteStream?: MediaStream | null;
+  error?: string | null;
 }
 
 export function P2PCallScreen({
@@ -22,6 +24,7 @@ export function P2PCallScreen({
   onReject,
   localStream,
   remoteStream,
+  error,
 }: P2PCallScreenProps) {
   const [callDuration, setCallDuration] = useState(0);
   const [isConnected, setIsConnected] = useState(!isIncoming);
@@ -31,20 +34,34 @@ export function P2PCallScreen({
   const localAudioRef = useRef<HTMLAudioElement>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
 
-  // Attach streams to audio elements
+  // Attach streams to audio elements with proper logging
   useEffect(() => {
     if (localAudioRef.current && localStream) {
+      console.log('[P2PCallScreen] Attaching local stream:', localStream.getTracks().length, 'tracks');
       localAudioRef.current.srcObject = localStream;
-      localAudioRef.current.muted = true; // Mute local playback to prevent echo
+      localAudioRef.current.muted = true;
     }
   }, [localStream]);
 
   useEffect(() => {
     if (remoteAudioRef.current && remoteStream) {
+      console.log('[P2PCallScreen] Attaching remote stream:', remoteStream.getTracks().length, 'tracks');
       remoteAudioRef.current.srcObject = remoteStream;
       remoteAudioRef.current.muted = !isSpeakerOn;
+      // Force play to ensure audio starts
+      remoteAudioRef.current.play().catch(err => {
+        console.warn('[P2PCallScreen] Failed to auto-play remote audio:', err);
+      });
     }
   }, [remoteStream, isSpeakerOn]);
+
+  // Auto-connect when both streams are available
+  useEffect(() => {
+    if (isIncoming && localStream && remoteStream && !isConnected) {
+      console.log('[P2PCallScreen] Both streams ready - auto-connecting');
+      setIsConnected(true);
+    }
+  }, [localStream, remoteStream, isConnected, isIncoming]);
 
   // Call timer
   useEffect(() => {
@@ -86,15 +103,34 @@ export function P2PCallScreen({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-gradient-to-b from-background to-secondary/20">
-      {/* Hidden audio elements */}
-      <audio ref={localAudioRef} autoPlay playsInline />
-      <audio ref={remoteAudioRef} autoPlay playsInline />
+      {/* Hidden audio elements - playsInline is required for iOS, but autoPlay may be blocked by browser policy */}
+      <audio 
+        ref={localAudioRef} 
+        autoPlay 
+        playsInline
+        muted
+        controls={false}
+      />
+      <audio 
+        ref={remoteAudioRef} 
+        autoPlay 
+        playsInline
+        controls={false}
+      />
 
       {/* Animated background circles */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full bg-primary/5 animate-pulse" />
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[400px] h-[400px] rounded-full bg-primary/10 animate-pulse [animation-delay:500ms]" />
       </div>
+
+      {/* Error Alert */}
+      {error && (
+        <Alert className="absolute top-8 left-8 right-8 max-w-md bg-destructive/10 border-destructive text-destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
       {/* Call info */}
       <div className="relative z-10 flex flex-col items-center">
@@ -125,7 +161,16 @@ export function P2PCallScreen({
           <div className="flex gap-2 mt-4">
             {localStream && (
               <span className="px-3 py-1 rounded-full bg-green-500/20 text-green-500 text-xs font-medium">
-                Audio Connected
+                🎤 {localStream.getAudioTracks().length} Audio Track
+              </span>
+            )}
+            {remoteStream ? (
+              <span className="px-3 py-1 rounded-full bg-green-500/20 text-green-500 text-xs font-medium">
+                🔊 Remote Connected
+              </span>
+            ) : (
+              <span className="px-3 py-1 rounded-full bg-yellow-500/20 text-yellow-600 text-xs font-medium">
+                ⏳ Waiting for remote...
               </span>
             )}
             {isMuted && (

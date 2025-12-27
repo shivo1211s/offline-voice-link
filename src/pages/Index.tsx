@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useLocalProfile } from '@/hooks/useLocalProfile';
 import { usePeerNetwork } from '@/hooks/usePeerNetwork';
+import { useUnreadMessages } from '@/hooks/useUnreadMessages';
 import { ConnectionSetup } from '@/components/network/ConnectionSetup';
 import { P2PHeader } from '@/components/network/P2PHeader';
 import { PeerList } from '@/components/network/PeerList';
@@ -58,12 +59,23 @@ const Index = () => {
     endCall,
     localStream,
     remoteStream,
+    callError,
   } = usePeerNetwork({
     profile,
     onMessage: handleMessage,
     onTyping: handleTyping,
     onCallOffer: handleCallOffer,
   });
+
+  // Unread messages tracking
+  const { unreadCounts, addUnreadMessage, markPeerAsSeen, loadUnreadCounts } = useUnreadMessages(profile?.id, peers);
+
+  // Update unread count when new message arrives
+  useEffect(() => {
+    if (latestMessage && latestMessage.senderId !== profile?.id) {
+      addUnreadMessage(latestMessage.senderId);
+    }
+  }, [latestMessage, profile?.id, addUnreadMessage]);
 
   // Handle responsive view
   useEffect(() => {
@@ -74,6 +86,13 @@ const Index = () => {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  // Mark messages as seen when peer is selected
+  useEffect(() => {
+    if (selectedPeer) {
+      markPeerAsSeen(selectedPeer.id);
+    }
+  }, [selectedPeer, markPeerAsSeen]);
 
   // Loading state
   if (profileLoading) {
@@ -157,6 +176,7 @@ const Index = () => {
         onReject={handleEndCall}
         localStream={localStream}
         remoteStream={remoteStream}
+        error={callError}
       />
     );
   }
@@ -188,6 +208,7 @@ const Index = () => {
             onRefresh={refreshPeers}
             isRefreshing={isScanning}
             onManualConnect={handleManualConnect}
+            unreadCounts={unreadCounts}
           />
         </div>
 

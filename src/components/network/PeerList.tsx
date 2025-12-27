@@ -16,9 +16,10 @@ interface PeerListProps {
   onRefresh?: () => void;
   isRefreshing?: boolean;
   onManualConnect?: (ip: string) => Promise<boolean>;
+  unreadCounts?: { [peerId: string]: number };
 }
 
-export function PeerList({ peers, selectedPeer, onSelectPeer, isHost, hostAddress, onRefresh, isRefreshing, onManualConnect }: PeerListProps) {
+export function PeerList({ peers, selectedPeer, onSelectPeer, isHost, hostAddress, onRefresh, isRefreshing, onManualConnect, unreadCounts = {} }: PeerListProps) {
   const [search, setSearch] = useState('');
   const [manualIp, setManualIp] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
@@ -168,6 +169,7 @@ export function PeerList({ peers, selectedPeer, onSelectPeer, isHost, hostAddres
                       peer={peer}
                       isSelected={selectedPeer?.id === peer.id}
                       onSelect={() => onSelectPeer(peer)}
+                      unreadCount={unreadCounts[peer.id] || 0}
                     />
                   ))}
                 </div>
@@ -185,6 +187,7 @@ export function PeerList({ peers, selectedPeer, onSelectPeer, isHost, hostAddres
                       peer={peer}
                       isSelected={selectedPeer?.id === peer.id}
                       onSelect={() => onSelectPeer(peer)}
+                      unreadCount={unreadCounts[peer.id] || 0}
                     />
                   ))}
                 </div>
@@ -197,7 +200,7 @@ export function PeerList({ peers, selectedPeer, onSelectPeer, isHost, hostAddres
   );
 }
 
-function PeerItem({ peer, isSelected, onSelect }: { peer: Peer; isSelected: boolean; onSelect: () => void }) {
+function PeerItem({ peer, isSelected, onSelect, unreadCount = 0 }: { peer: Peer; isSelected: boolean; onSelect: () => void; unreadCount?: number }) {
   return (
     <button
       onClick={onSelect}
@@ -214,10 +217,16 @@ function PeerItem({ peer, isSelected, onSelect }: { peer: Peer; isSelected: bool
         {peer.isOnline && (
           <span className="absolute bottom-0 right-0 online-indicator" />
         )}
+        {/* Unread Message Badge */}
+        {unreadCount > 0 && (
+          <span className="absolute -top-1 -right-1 w-6 h-6 bg-red-500 text-white text-xs font-bold rounded-full flex items-center justify-center border-2 border-background shadow-lg animate-pulse">
+            {unreadCount > 99 ? '99+' : unreadCount}
+          </span>
+        )}
       </div>
 
       <div className="flex-1 text-left min-w-0">
-        <p className="font-medium text-foreground truncate">
+        <p className={`font-medium ${unreadCount > 0 ? 'text-foreground font-semibold' : 'text-foreground'} truncate`}>
           {peer.username}
         </p>
         <p className="text-xs text-muted-foreground truncate">
@@ -231,6 +240,18 @@ function PeerItem({ peer, isSelected, onSelect }: { peer: Peer; isSelected: bool
           </span>
         </div>
       </div>
+
+      {/* Unread indicator on the right */}
+      {unreadCount > 0 && (
+        <div className="ml-auto flex-shrink-0">
+          <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-red-50 dark:bg-red-900/20">
+            <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+            <span className="text-xs font-semibold text-red-600 dark:text-red-400">
+              {unreadCount} new
+            </span>
+          </span>
+        </div>
+      )}
     </button>
   );
 }
