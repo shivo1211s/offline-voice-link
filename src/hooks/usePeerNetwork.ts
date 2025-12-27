@@ -139,11 +139,14 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
   // Create WebRTC peer connection
   const createPeerConnection = useCallback((peerId: string): RTCPeerConnection => {
     const pc = new RTCPeerConnection({
-      iceServers: [] // No STUN/TURN needed for LAN
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' }, // Fallback STUN for NAT traversal
+      ]
     });
 
     pc.onicecandidate = (event) => {
       if (event.candidate && profile) {
+        console.log('[WebRTC] ICE candidate:', event.candidate.candidate);
         sendToPeer(peerId, {
           type: 'ice-candidate',
           from: profile.id,
@@ -153,9 +156,19 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
       }
     };
 
+    pc.oniceconnectionstatechange = () => {
+      console.log('[WebRTC] ICE connection state:', pc.iceConnectionState);
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log('[WebRTC] Connection state:', pc.connectionState);
+    };
+
     pc.ontrack = (event) => {
-      console.log('[usePeerNetwork] Remote track received');
-      setRemoteStream(event.streams[0]);
+      console.log('[WebRTC] Remote track received:', event.track.kind);
+      if (event.streams && event.streams[0]) {
+        setRemoteStream(event.streams[0]);
+      }
     };
 
     return pc;
