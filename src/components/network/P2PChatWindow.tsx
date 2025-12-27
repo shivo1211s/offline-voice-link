@@ -140,7 +140,7 @@ export function P2PChatWindow({
   };
 
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="flex flex-col h-full bg-background overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-3 p-4 border-b border-border glass-panel">
         <Button

@@ -137,7 +137,7 @@ const Index = () => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
+    <div className="h-screen flex flex-col bg-background overflow-hidden">
       <P2PHeader
         profile={profile}
         isHost={true}
@@ -146,7 +146,7 @@ const Index = () => {
         onLogout={logout}
       />
       
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden min-h-0">
         {/* Peer List - hidden on mobile when chat is open */}
         <div
           className={`w-full md:w-80 lg:w-96 flex-shrink-0 ${
