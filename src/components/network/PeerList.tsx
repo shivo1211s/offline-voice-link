@@ -31,27 +31,25 @@ export function PeerList({ peers, selectedPeer, onSelectPeer, isHost, hostAddres
     <div className="flex flex-col h-full bg-card border-r border-border overflow-hidden">
       {/* Header */}
       <div className="p-4 border-b border-border">
-        <div className="flex items-center gap-3 mb-3">
-          <Users className="w-6 h-6 text-primary" />
+        <div className="flex items-center gap-2 mb-3">
+          <Users className="w-5 h-5 text-primary flex-shrink-0" />
           <h2 className="text-lg font-display font-semibold text-foreground">Devices</h2>
           
-          {/* Refresh Button */}
-          {onRefresh && (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onRefresh}
-              disabled={isRefreshing}
-              className="ml-auto h-8 w-8"
-              title="Refresh devices"
-            >
-              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-            </Button>
-          )}
-          
-          <span className={`${onRefresh ? '' : 'ml-auto'} px-2 py-0.5 text-xs font-medium bg-primary/10 text-primary rounded-full`}>
+          <span className="ml-auto px-2 py-0.5 text-xs font-medium bg-primary/10 text-primary rounded-full flex-shrink-0">
             {onlinePeers.length} online
           </span>
+          
+          {/* Refresh Button - Always visible */}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onRefresh}
+            disabled={isRefreshing || !onRefresh}
+            className="h-8 w-8 flex-shrink-0"
+            title="Refresh devices"
+          >
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+          </Button>
         </div>
 
         {/* Connection Status */}
