@@ -231,8 +231,17 @@ public class LanDiscoveryPlugin extends Plugin {
     }
     
     private String getLocalIpAddress() {
+        Log.d(TAG, "=== Starting IP detection ===");
+        
         try {
-            // Method 1: Try ConnectivityManager (API 23+) for active network
+            // Method 1: Check hotspot/tethering interfaces FIRST (highest priority)
+            String hotspotIp = getHotspotIp();
+            if (hotspotIp != null) {
+                Log.d(TAG, "Using hotspot IP: " + hotspotIp);
+                return hotspotIp;
+            }
+            
+            // Method 2: Try ConnectivityManager (API 23+) for active network
             ConnectivityManager cm = (ConnectivityManager) getContext().getSystemService(Context.CONNECTIVITY_SERVICE);
             if (cm != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
                 Network activeNetwork = cm.getActiveNetwork();
@@ -252,7 +261,7 @@ public class LanDiscoveryPlugin extends Plugin {
                 }
             }
             
-            // Method 2: Try WiFi Manager
+            // Method 3: Try WiFi Manager
             WifiManager wifiManager = (WifiManager) getContext().getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             if (wifiManager != null && wifiManager.isWifiEnabled()) {
                 int ipInt = wifiManager.getConnectionInfo().getIpAddress();
@@ -267,38 +276,44 @@ public class LanDiscoveryPlugin extends Plugin {
                 }
             }
             
-            // Method 3: Enumerate all network interfaces - prefer wlan, ap, and swlan interfaces
+            // Method 4: Enumerate all network interfaces
             String fallbackIp = null;
             Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
             while (interfaces != null && interfaces.hasMoreElements()) {
                 NetworkInterface ni = interfaces.nextElement();
                 String interfaceName = ni.getName().toLowerCase();
                 
-                // Skip loopback and down interfaces
                 if (ni.isLoopback() || !ni.isUp()) {
                     continue;
                 }
+                
+                Log.d(TAG, "Checking interface: " + interfaceName);
                 
                 Enumeration<InetAddress> addresses = ni.getInetAddresses();
                 while (addresses.hasMoreElements()) {
                     InetAddress addr = addresses.nextElement();
                     if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
                         String ip = addr.getHostAddress();
+                        Log.d(TAG, "  Found IPv4: " + ip + " on " + interfaceName);
                         
-                        // Prefer specific interface types
-                        // wlan = WiFi, ap = Access Point/Hotspot, swlan = Software WLAN
-                        // rndis = USB tethering, eth = ethernet
-                        if (interfaceName.startsWith("wlan") || 
-                            interfaceName.startsWith("ap") || 
-                            interfaceName.startsWith("swlan")) {
-                            Log.d(TAG, "Found IP via preferred interface (" + interfaceName + "): " + ip);
+                        // Prefer hotspot/tethering interfaces
+                        if (interfaceName.startsWith("ap") || 
+                            interfaceName.startsWith("swlan") ||
+                            interfaceName.startsWith("rndis") ||
+                            interfaceName.contains("softap") ||
+                            interfaceName.contains("wlan1")) {
+                            Log.d(TAG, "Using hotspot/tethering IP from " + interfaceName + ": " + ip);
                             return ip;
                         }
                         
-                        // Keep as fallback if we haven't found a preferred interface yet
+                        // Then prefer WiFi
+                        if (interfaceName.startsWith("wlan")) {
+                            Log.d(TAG, "Using WiFi IP from " + interfaceName + ": " + ip);
+                            return ip;
+                        }
+                        
                         if (fallbackIp == null) {
                             fallbackIp = ip;
-                            Log.d(TAG, "Found fallback IP via interface (" + interfaceName + "): " + ip);
                         }
                     }
                 }
@@ -313,6 +328,39 @@ public class LanDiscoveryPlugin extends Plugin {
             Log.e(TAG, "Error getting local IP", e);
         }
         Log.w(TAG, "Could not determine local IP address");
+        return null;
+    }
+    
+    private String getHotspotIp() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces != null && interfaces.hasMoreElements()) {
+                NetworkInterface ni = interfaces.nextElement();
+                String name = ni.getName().toLowerCase();
+                
+                // Common hotspot interface names across devices
+                boolean isHotspotInterface = 
+                    name.startsWith("ap") ||
+                    name.startsWith("swlan") ||
+                    name.contains("softap") ||
+                    name.equals("wlan1") ||
+                    name.startsWith("rndis");
+                
+                if (isHotspotInterface && ni.isUp() && !ni.isLoopback()) {
+                    Enumeration<InetAddress> addresses = ni.getInetAddresses();
+                    while (addresses.hasMoreElements()) {
+                        InetAddress addr = addresses.nextElement();
+                        if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
+                            String ip = addr.getHostAddress();
+                            Log.d(TAG, "Found hotspot IP via " + name + ": " + ip);
+                            return ip;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error checking hotspot interfaces", e);
+        }
         return null;
     }
 }
