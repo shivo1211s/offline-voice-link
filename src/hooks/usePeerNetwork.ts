@@ -12,11 +12,14 @@ interface UsePeerNetworkProps {
 }
 
 const WS_PORT = 8765;
+const SERVICE_PREFIX = 'LC_';
 
 export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: UsePeerNetworkProps) {
   const [peers, setPeers] = useState<Peer[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [myIp, setMyIp] = useState<string>('');
+  const [myDeviceId, setMyDeviceId] = useState<string>('');
+  const [myDeviceName, setMyDeviceName] = useState<string>('');
   const [isScanning, setIsScanning] = useState(false);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -36,8 +39,15 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
 
     const initialize = async () => {
       try {
-        const { ip } = await LanDiscovery.getLocalIp();
-        if (!cleanup) setMyIp(ip);
+        const [{ ip }, device] = await Promise.all([
+          LanDiscovery.getLocalIp(),
+          LanDiscovery.getDeviceId().catch(() => ({ deviceId: '', deviceName: '' })),
+        ]);
+        if (!cleanup) {
+          setMyIp(ip);
+          setMyDeviceId(device.deviceId || '');
+          setMyDeviceName(device.deviceName || '');
+        }
         
         const cachedPeers = await getPeers();
         if (!cleanup && cachedPeers.length > 0) {
@@ -267,7 +277,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
         case 'seen':
           updateMessageStatus(message.payload.messageId, 'seen');
           break;
-        case 'join':
+        case 'join': {
           // PRIORITY 1: Extract IP from clientId (WebSocket connection) - this is the real IP
           let peerIp: string | null = null;
           if (clientId) {
@@ -278,7 +288,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
               console.log('[usePeerNetwork] Using IP from clientId:', peerIp);
             }
           }
-          
+
           // PRIORITY 2: Check existing mDNS discovered peer
           if (!peerIp) {
             const existingPeer = peers.find(p => p.id === message.from && p.ip && p.ip !== '0.0.0.0');
@@ -287,19 +297,22 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
               console.log('[usePeerNetwork] Using existing peer IP:', peerIp);
             }
           }
-          
+
           // PRIORITY 3: Use payload IP if valid
           if (!peerIp && message.payload.ip && message.payload.ip !== '0.0.0.0' && message.payload.ip !== '127.0.0.1') {
             peerIp = message.payload.ip;
             console.log('[usePeerNetwork] Using payload IP:', peerIp);
           }
-          
+
           // Skip if still no valid IP
           if (!peerIp) {
             console.log('[usePeerNetwork] Skipping join - no valid IP found');
             break;
           }
-          
+
+          const payloadDeviceId = (message.payload?.deviceId as string | undefined) || undefined;
+          const payloadDeviceName = (message.payload?.deviceName as string | undefined) || undefined;
+
           const joinedPeer: Peer = {
             id: message.from,
             username: message.payload.username,
@@ -307,31 +320,44 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
             isOnline: true,
             lastSeen: new Date(),
             avatarUrl: message.payload.avatarUrl,
+            deviceId: payloadDeviceId,
+            deviceName: payloadDeviceName,
           };
-          
+
           if (clientId) {
             updateFromJoinMessage(message.from, peerIp, clientId);
           }
-          
-          // Strong IP-based deduplication
+
+          // Deduplicate by stable deviceId (Android ID) when available, then by IP
           setPeers(prev => {
-            // Remove any stale entries with same profile ID but different IP
-            const filtered = prev.filter(p => p.id !== message.from);
-            
-            // Check if peer with same IP already exists
+            const filtered = prev.filter(p =>
+              p.id !== message.from &&
+              (!payloadDeviceId || p.deviceId !== payloadDeviceId)
+            );
+
+            if (payloadDeviceId) {
+              const existingByDeviceId = filtered.find(p => p.deviceId === payloadDeviceId);
+              if (existingByDeviceId) {
+                return filtered.map(p => p.deviceId === payloadDeviceId
+                  ? { ...p, ...joinedPeer, id: message.from }
+                  : p
+                );
+              }
+            }
+
             const existingByIp = filtered.find(p => p.ip === peerIp);
             if (existingByIp) {
-              // Merge: update existing entry with new data
-              return filtered.map(p => p.ip === peerIp 
-                ? { ...p, ...joinedPeer, username: message.payload.username || p.username } 
+              return filtered.map(p => p.ip === peerIp
+                ? { ...p, ...joinedPeer, username: message.payload.username || p.username }
                 : p
               );
             }
-            
+
             return [...filtered, joinedPeer];
           });
+
           savePeer(joinedPeer);
-          
+
           if (profile && myIp && myIp !== '0.0.0.0') {
             sendToPeer(message.from, {
               type: 'join',
@@ -341,10 +367,13 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
                 username: profile.username,
                 ip: myIp,
                 avatarUrl: profile.avatarUrl,
+                deviceId: myDeviceId,
+                deviceName: myDeviceName,
               },
             });
           }
           break;
+        }
         case 'leave':
           setPeers(prev => prev.map(p => 
             p.id === message.from ? { ...p, isOnline: false, lastSeen: new Date() } : p
@@ -371,7 +400,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     } catch (error) {
       console.error('[usePeerNetwork] Error parsing message:', error);
     }
-  }, [profile, peers, myIp, onTyping, onCallOffer, updateFromJoinMessage, removePeerMapping, sendToPeer, handleIncomingMessage, handleCallAnswer, handleCallEnd, handleWebRTCSignaling]);
+  }, [profile, peers, myIp, myDeviceId, myDeviceName, onTyping, onCallOffer, updateFromJoinMessage, removePeerMapping, sendToPeer, handleIncomingMessage, handleCallAnswer, handleCallEnd, handleWebRTCSignaling]);
 
   // Go online
   const goOnline = useCallback(async () => {
@@ -401,7 +430,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
       });
 
       await LanDiscovery.startAdvertising({
-        serviceName: `${profile.username}-${profile.id.slice(0, 8)}`,
+        serviceName: `${SERVICE_PREFIX}${profile.id}`,
         port: WS_PORT
       });
 
@@ -430,11 +459,21 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
           });
 
           const clientId = result.clientId || `${discoveredPeer.ip}:${discoveredPeer.port}`;
-          registerPeerConnection(discoveredPeer.id, clientId, discoveredPeer.ip);
+
+          const advertisedId = discoveredPeer.id || discoveredPeer.name;
+          const peerId = advertisedId?.startsWith(SERVICE_PREFIX)
+            ? advertisedId.slice(SERVICE_PREFIX.length)
+            : advertisedId;
+
+          const inferredUsername = advertisedId?.startsWith(SERVICE_PREFIX)
+            ? 'Device'
+            : (discoveredPeer.name?.split('-')[0] || 'Device');
+
+          registerPeerConnection(peerId, clientId, discoveredPeer.ip);
 
           const newPeer: Peer = {
-            id: discoveredPeer.id,
-            username: discoveredPeer.name.split('-')[0],
+            id: peerId,
+            username: inferredUsername,
             ip: discoveredPeer.ip,
             isOnline: true,
             lastSeen: new Date(),
@@ -442,20 +481,19 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
 
           // DEDUPE: Use IP as unique key - one entry per IP address
           setPeers(prev => {
-            // Check if peer with same IP already exists
             const existingByIp = prev.find(p => p.ip === discoveredPeer.ip);
             if (existingByIp) {
-              // Update existing entry
-              return prev.map(p => p.ip === discoveredPeer.ip 
-                ? { ...p, isOnline: true, username: discoveredPeer.name.split('-')[0], id: discoveredPeer.id } 
+              return prev.map(p => p.ip === discoveredPeer.ip
+                ? { ...p, ...newPeer, id: peerId }
                 : p
               );
             }
-            // Check if peer with same ID exists (update it)
-            const existsById = prev.find(p => p.id === discoveredPeer.id);
+
+            const existsById = prev.find(p => p.id === peerId);
             if (existsById) {
-              return prev.map(p => p.id === discoveredPeer.id ? { ...p, isOnline: true, ip: discoveredPeer.ip } : p);
+              return prev.map(p => p.id === peerId ? { ...p, ...newPeer } : p);
             }
+
             return [...prev, newPeer];
           });
 
@@ -464,13 +502,15 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
           setTimeout(async () => {
             if (profile) {
               const latestIp = myIp || (await LanDiscovery.getLocalIp()).ip;
-              sendToPeer(discoveredPeer.id, {
+              sendToPeer(peerId, {
                 type: 'join',
                 from: profile.id,
                 payload: {
                   username: profile.username,
                   ip: latestIp,
                   avatarUrl: profile.avatarUrl,
+                  deviceId: myDeviceId,
+                  deviceName: myDeviceName,
                 },
               });
             }
@@ -482,10 +522,16 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
 
       await LanDiscovery.addListener('peerLost', (discoveredPeer: DiscoveredPeer) => {
         console.log('[usePeerNetwork] Peer lost:', discoveredPeer);
-        setPeers(prev => prev.map(p => 
-          p.id === discoveredPeer.id ? { ...p, isOnline: false, lastSeen: new Date() } : p
+
+        const advertisedId = discoveredPeer.id || discoveredPeer.name;
+        const peerId = advertisedId?.startsWith(SERVICE_PREFIX)
+          ? advertisedId.slice(SERVICE_PREFIX.length)
+          : advertisedId;
+
+        setPeers(prev => prev.map(p =>
+          p.id === peerId ? { ...p, isOnline: false, lastSeen: new Date() } : p
         ));
-        removePeerMapping(discoveredPeer.id);
+        removePeerMapping(peerId);
       });
 
       setIsConnected(true);
@@ -499,7 +545,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
       setIsScanning(false);
       setIsConnected(true);
     }
-  }, [profile, myIp, handleIncomingData, registerPeerConnection, removePeerMapping, getPeerIdForClient, sendToPeer]);
+  }, [profile, myIp, myDeviceId, myDeviceName, handleIncomingData, registerPeerConnection, removePeerMapping, getPeerIdForClient, sendToPeer]);
 
   // Go offline
   const goOffline = useCallback(async () => {
