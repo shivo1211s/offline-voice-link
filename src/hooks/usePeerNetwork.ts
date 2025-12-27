@@ -594,9 +594,69 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     } catch (error) {
       console.error('[usePeerNetwork] Refresh error:', error);
     } finally {
-      setIsScanning(false);
+    setIsScanning(false);
     }
   }, [profile, isConnected]);
+
+  // Manually connect to a peer by IP address
+  const connectToIp = useCallback(async (ip: string): Promise<boolean> => {
+    if (!profile || !isConnected) return false;
+    
+    console.log('[usePeerNetwork] Manual connect to IP:', ip);
+    
+    try {
+      const result = await WebSocketServer.connectToPeer({
+        ip,
+        port: WS_PORT
+      });
+
+      const clientId = result.clientId || `${ip}:${WS_PORT}`;
+      const tempPeerId = `manual_${ip.replace(/\./g, '_')}`;
+
+      registerPeerConnection(tempPeerId, clientId, ip);
+
+      // Add temporary peer entry
+      const newPeer: Peer = {
+        id: tempPeerId,
+        username: 'Connecting...',
+        ip: ip,
+        isOnline: true,
+        lastSeen: new Date(),
+      };
+
+      setPeers(prev => {
+        const existingByIp = prev.find(p => p.ip === ip);
+        if (existingByIp) {
+          return prev.map(p => p.ip === ip ? { ...p, isOnline: true } : p);
+        }
+        return [...prev, newPeer];
+      });
+
+      // Send join message to discover peer info
+      const latestIp = myIp || (await LanDiscovery.getLocalIp()).ip;
+      await WebSocketServer.send({
+        clientId,
+        data: JSON.stringify({
+          type: 'join',
+          from: profile.id,
+          payload: {
+            username: profile.username,
+            ip: latestIp,
+            avatarUrl: profile.avatarUrl,
+            deviceId: myDeviceId,
+            deviceName: myDeviceName,
+          },
+        })
+      });
+
+      console.log('[usePeerNetwork] Manual connect successful');
+      return true;
+    } catch (error) {
+      console.error('[usePeerNetwork] Manual connect failed:', error);
+      return false;
+    }
+  }, [profile, isConnected, myIp, myDeviceId, myDeviceName, registerPeerConnection]);
+
   // Send a message
   const sendMessage = useCallback(async (receiverId: string, content: string): Promise<P2PMessage> => {
     if (!profile) throw new Error('No profile');
@@ -746,6 +806,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     myIp,
     isScanning,
     refreshPeers,
+    connectToIp,
     startHost: goOnline,
     joinNetwork: goOnline,
     goOnline,

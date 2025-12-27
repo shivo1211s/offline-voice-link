@@ -3,7 +3,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { formatDistanceToNow } from 'date-fns';
-import { Search, Users, Wifi, WifiOff, RefreshCw } from 'lucide-react';
+import { Search, Users, Wifi, WifiOff, RefreshCw, Plus, Loader2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { useState } from 'react';
 
@@ -15,10 +15,14 @@ interface PeerListProps {
   hostAddress: string;
   onRefresh?: () => void;
   isRefreshing?: boolean;
+  onManualConnect?: (ip: string) => Promise<boolean>;
 }
 
-export function PeerList({ peers, selectedPeer, onSelectPeer, isHost, hostAddress, onRefresh, isRefreshing }: PeerListProps) {
+export function PeerList({ peers, selectedPeer, onSelectPeer, isHost, hostAddress, onRefresh, isRefreshing, onManualConnect }: PeerListProps) {
   const [search, setSearch] = useState('');
+  const [manualIp, setManualIp] = useState('');
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [showManualInput, setShowManualInput] = useState(false);
 
   const filteredPeers = peers.filter((p) =>
     p.username.toLowerCase().includes(search.toLowerCase())
@@ -26,6 +30,27 @@ export function PeerList({ peers, selectedPeer, onSelectPeer, isHost, hostAddres
 
   const onlinePeers = filteredPeers.filter(p => p.isOnline);
   const offlinePeers = filteredPeers.filter(p => !p.isOnline);
+
+  const handleManualConnect = async () => {
+    if (!manualIp.trim() || !onManualConnect) return;
+    
+    // Basic IP validation
+    const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+    if (!ipRegex.test(manualIp.trim())) {
+      return;
+    }
+    
+    setIsConnecting(true);
+    try {
+      const success = await onManualConnect(manualIp.trim());
+      if (success) {
+        setManualIp('');
+        setShowManualInput(false);
+      }
+    } finally {
+      setIsConnecting(false);
+    }
+  };
 
   return (
     <div className="flex flex-col h-full bg-card border-r border-border overflow-hidden">
@@ -63,6 +88,50 @@ export function PeerList({ peers, selectedPeer, onSelectPeer, isHost, hostAddres
             {isHost ? 'Hosting' : 'Connected'}: {hostAddress}
           </span>
         </div>
+
+        {/* Manual IP Connect */}
+        {onManualConnect && (
+          <div className="mb-3">
+            {showManualInput ? (
+              <div className="flex gap-2">
+                <Input
+                  placeholder="192.168.1.x"
+                  value={manualIp}
+                  onChange={(e) => setManualIp(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleManualConnect()}
+                  className="h-9 rounded-lg bg-secondary/50 border-border text-sm"
+                  disabled={isConnecting}
+                />
+                <Button
+                  size="sm"
+                  onClick={handleManualConnect}
+                  disabled={isConnecting || !manualIp.trim()}
+                  className="h-9 px-3"
+                >
+                  {isConnecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => { setShowManualInput(false); setManualIp(''); }}
+                  className="h-9 px-2"
+                >
+                  ✕
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowManualInput(true)}
+                className="w-full h-9 text-xs"
+              >
+                <Plus className="w-3 h-3 mr-1" />
+                Add device by IP
+              </Button>
+            )}
+          </div>
+        )}
         
         {/* Search */}
         <div className="relative">
