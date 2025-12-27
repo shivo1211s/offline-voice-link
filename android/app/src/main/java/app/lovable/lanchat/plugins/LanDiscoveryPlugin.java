@@ -20,6 +20,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import java.net.DatagramSocket;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
@@ -254,14 +255,21 @@ public class LanDiscoveryPlugin extends Plugin {
         Log.d(TAG, "=== Starting IP detection ===");
         
         try {
-            // Method 1: Check hotspot/tethering interfaces FIRST (highest priority)
+            // Method 1: Socket-based detection (MOST RELIABLE - gets actual routing IP)
+            String socketIp = getIpBySocket();
+            if (socketIp != null && !socketIp.equals("0.0.0.0")) {
+                Log.d(TAG, "Using socket-based IP: " + socketIp);
+                return socketIp;
+            }
+            
+            // Method 2: Check hotspot/tethering interfaces
             String hotspotIp = getHotspotIp();
             if (hotspotIp != null) {
                 Log.d(TAG, "Using hotspot IP: " + hotspotIp);
                 return hotspotIp;
             }
             
-            // Method 2: Try ConnectivityManager (API 23+) for active network
+            // Method 3: Try ConnectivityManager (API 23+) for active network
             ConnectivityManager cm = (ConnectivityManager) getContext().getSystemService(Context.CONNECTIVITY_SERVICE);
             if (cm != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
                 Network activeNetwork = cm.getActiveNetwork();
@@ -281,7 +289,7 @@ public class LanDiscoveryPlugin extends Plugin {
                 }
             }
             
-            // Method 3: Try WiFi Manager
+            // Method 4: Try WiFi Manager
             WifiManager wifiManager = (WifiManager) getContext().getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             if (wifiManager != null && wifiManager.isWifiEnabled()) {
                 int ipInt = wifiManager.getConnectionInfo().getIpAddress();
@@ -296,7 +304,7 @@ public class LanDiscoveryPlugin extends Plugin {
                 }
             }
             
-            // Method 4: Enumerate all network interfaces
+            // Method 5: Enumerate all network interfaces
             String fallbackIp = null;
             Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
             while (interfaces != null && interfaces.hasMoreElements()) {
@@ -348,6 +356,30 @@ public class LanDiscoveryPlugin extends Plugin {
             Log.e(TAG, "Error getting local IP", e);
         }
         Log.w(TAG, "Could not determine local IP address");
+        return null;
+    }
+    
+    /**
+     * Get IP by opening a socket to an external server.
+     * This is the most reliable method as it returns the IP the system would use for routing.
+     */
+    private String getIpBySocket() {
+        DatagramSocket socket = null;
+        try {
+            socket = new DatagramSocket();
+            socket.connect(InetAddress.getByName("8.8.8.8"), 10002);
+            String ip = socket.getLocalAddress().getHostAddress();
+            Log.d(TAG, "Socket-based IP detection: " + ip);
+            if (ip != null && !ip.equals("0.0.0.0") && !ip.startsWith("127.")) {
+                return ip;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Socket-based IP detection failed", e);
+        } finally {
+            if (socket != null) {
+                socket.close();
+            }
+        }
         return null;
     }
     
