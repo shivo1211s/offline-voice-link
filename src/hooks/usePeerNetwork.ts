@@ -18,12 +18,11 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
   const [isConnected, setIsConnected] = useState(false);
   const [myIp, setMyIp] = useState<string>('');
   const [isScanning, setIsScanning] = useState(false);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const remoteStreamRef = useRef<MediaStream | null>(null);
   const pendingCallOffersRef = useRef<Map<string, RTCSessionDescriptionInit>>(new Map());
-
   // Peer-client mapping refs (inline instead of separate hook to avoid hook count issues)
   const peerIdToClientIdRef = useRef<Map<string, string>>(new Map());
   const clientIdToPeerIdRef = useRef<Map<string, string>>(new Map());
@@ -155,16 +154,19 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     };
 
     pc.ontrack = (event) => {
-      remoteStreamRef.current = event.streams[0];
+      console.log('[usePeerNetwork] Remote track received');
+      setRemoteStream(event.streams[0]);
     };
 
     return pc;
   }, [profile, sendToPeer]);
 
   const handleCallEnd = useCallback((peerId: string) => {
-    localStreamRef.current?.getTracks().forEach(track => track.stop());
-    localStreamRef.current = null;
-    remoteStreamRef.current = null;
+    setLocalStream(prev => {
+      prev?.getTracks().forEach(track => track.stop());
+      return null;
+    });
+    setRemoteStream(null);
     
     const pc = peerConnectionsRef.current.get(peerId);
     if (pc) {
@@ -495,7 +497,8 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     if (!profile) return;
 
     try {
-      localStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setLocalStream(stream);
       
       let pc = peerConnectionsRef.current.get(peerId);
       if (!pc) {
@@ -503,8 +506,8 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
         peerConnectionsRef.current.set(peerId, pc);
       }
 
-      localStreamRef.current.getTracks().forEach(track => {
-        pc!.addTrack(track, localStreamRef.current!);
+      stream.getTracks().forEach(track => {
+        pc!.addTrack(track, stream);
       });
 
       const offer = await pc.createOffer();
@@ -525,7 +528,8 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     if (!profile) return;
 
     try {
-      localStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setLocalStream(stream);
       
       let pc = peerConnectionsRef.current.get(peerId);
       if (!pc) {
@@ -533,8 +537,8 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
         peerConnectionsRef.current.set(peerId, pc);
       }
 
-      localStreamRef.current.getTracks().forEach(track => {
-        pc!.addTrack(track, localStreamRef.current!);
+      stream.getTracks().forEach(track => {
+        pc!.addTrack(track, stream);
       });
 
       const offer = pendingCallOffersRef.current.get(peerId);
@@ -560,9 +564,11 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
   const endCall = useCallback((peerId: string) => {
     if (!profile) return;
 
-    localStreamRef.current?.getTracks().forEach(track => track.stop());
-    localStreamRef.current = null;
-    remoteStreamRef.current = null;
+    setLocalStream(prev => {
+      prev?.getTracks().forEach(track => track.stop());
+      return null;
+    });
+    setRemoteStream(null);
 
     const pc = peerConnectionsRef.current.get(peerId);
     if (pc) {
@@ -598,7 +604,7 @@ export function usePeerNetwork({ profile, onMessage, onTyping, onCallOffer }: Us
     answerCall,
     endCall,
     getMessages,
-    localStream: localStreamRef.current,
-    remoteStream: remoteStreamRef.current,
+    localStream,
+    remoteStream,
   };
 }

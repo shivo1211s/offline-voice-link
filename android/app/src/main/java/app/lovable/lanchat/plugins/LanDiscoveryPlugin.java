@@ -1,6 +1,11 @@
 package app.lovable.lanchat.plugins;
 
 import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.net.wifi.WifiManager;
@@ -13,9 +18,11 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.Collections;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -219,37 +226,93 @@ public class LanDiscoveryPlugin extends Plugin {
         String ip = getLocalIpAddress();
         JSObject result = new JSObject();
         result.put("ip", ip != null ? ip : "0.0.0.0");
+        Log.d(TAG, "getLocalIp returning: " + (ip != null ? ip : "0.0.0.0"));
         call.resolve(result);
     }
     
     private String getLocalIpAddress() {
         try {
-            // Try WiFi first
+            // Method 1: Try ConnectivityManager (API 23+) for active network
+            ConnectivityManager cm = (ConnectivityManager) getContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                Network activeNetwork = cm.getActiveNetwork();
+                if (activeNetwork != null) {
+                    LinkProperties linkProperties = cm.getLinkProperties(activeNetwork);
+                    if (linkProperties != null) {
+                        List<LinkAddress> linkAddresses = linkProperties.getLinkAddresses();
+                        for (LinkAddress linkAddress : linkAddresses) {
+                            InetAddress addr = linkAddress.getAddress();
+                            if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
+                                String ip = addr.getHostAddress();
+                                Log.d(TAG, "Found IP via ConnectivityManager: " + ip);
+                                return ip;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Method 2: Try WiFi Manager
             WifiManager wifiManager = (WifiManager) getContext().getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-            if (wifiManager != null) {
+            if (wifiManager != null && wifiManager.isWifiEnabled()) {
                 int ipInt = wifiManager.getConnectionInfo().getIpAddress();
                 if (ipInt != 0) {
-                    return String.format("%d.%d.%d.%d",
+                    String ip = String.format("%d.%d.%d.%d",
                             (ipInt & 0xff),
                             (ipInt >> 8 & 0xff),
                             (ipInt >> 16 & 0xff),
                             (ipInt >> 24 & 0xff));
+                    Log.d(TAG, "Found IP via WifiManager: " + ip);
+                    return ip;
                 }
             }
             
-            // Fallback to network interfaces
-            List<NetworkInterface> interfaces = Collections.list(NetworkInterface.getNetworkInterfaces());
-            for (NetworkInterface ni : interfaces) {
-                List<InetAddress> addresses = Collections.list(ni.getInetAddresses());
-                for (InetAddress addr : addresses) {
-                    if (!addr.isLoopbackAddress() && addr.getHostAddress().indexOf(':') < 0) {
-                        return addr.getHostAddress();
+            // Method 3: Enumerate all network interfaces - prefer wlan, ap, and swlan interfaces
+            String fallbackIp = null;
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces != null && interfaces.hasMoreElements()) {
+                NetworkInterface ni = interfaces.nextElement();
+                String interfaceName = ni.getName().toLowerCase();
+                
+                // Skip loopback and down interfaces
+                if (ni.isLoopback() || !ni.isUp()) {
+                    continue;
+                }
+                
+                Enumeration<InetAddress> addresses = ni.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress addr = addresses.nextElement();
+                    if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
+                        String ip = addr.getHostAddress();
+                        
+                        // Prefer specific interface types
+                        // wlan = WiFi, ap = Access Point/Hotspot, swlan = Software WLAN
+                        // rndis = USB tethering, eth = ethernet
+                        if (interfaceName.startsWith("wlan") || 
+                            interfaceName.startsWith("ap") || 
+                            interfaceName.startsWith("swlan")) {
+                            Log.d(TAG, "Found IP via preferred interface (" + interfaceName + "): " + ip);
+                            return ip;
+                        }
+                        
+                        // Keep as fallback if we haven't found a preferred interface yet
+                        if (fallbackIp == null) {
+                            fallbackIp = ip;
+                            Log.d(TAG, "Found fallback IP via interface (" + interfaceName + "): " + ip);
+                        }
                     }
                 }
             }
+            
+            if (fallbackIp != null) {
+                Log.d(TAG, "Using fallback IP: " + fallbackIp);
+                return fallbackIp;
+            }
+            
         } catch (Exception e) {
             Log.e(TAG, "Error getting local IP", e);
         }
+        Log.w(TAG, "Could not determine local IP address");
         return null;
     }
 }
