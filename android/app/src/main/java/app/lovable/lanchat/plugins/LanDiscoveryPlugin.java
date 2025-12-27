@@ -9,6 +9,8 @@ import android.net.NetworkCapabilities;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.net.wifi.WifiManager;
+import android.os.Build;
+import android.provider.Settings;
 import android.util.Log;
 
 import com.getcapacitor.JSArray;
@@ -227,6 +229,24 @@ public class LanDiscoveryPlugin extends Plugin {
         JSObject result = new JSObject();
         result.put("ip", ip != null ? ip : "0.0.0.0");
         Log.d(TAG, "getLocalIp returning: " + (ip != null ? ip : "0.0.0.0"));
+        call.resolve(result);
+    }
+    
+    @PluginMethod
+    public void getDeviceId(PluginCall call) {
+        // Get persistent Android ID
+        String androidId = Settings.Secure.getString(
+            getContext().getContentResolver(), 
+            Settings.Secure.ANDROID_ID
+        );
+        
+        // Get device manufacturer and model
+        String deviceName = Build.MANUFACTURER + " " + Build.MODEL;
+        
+        JSObject result = new JSObject();
+        result.put("deviceId", androidId != null ? androidId : "unknown");
+        result.put("deviceName", deviceName);
+        Log.d(TAG, "getDeviceId returning: " + androidId + ", " + deviceName);
         call.resolve(result);
     }
     

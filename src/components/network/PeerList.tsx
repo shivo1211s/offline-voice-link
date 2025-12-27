@@ -1,8 +1,9 @@
 import { Peer } from '@/types/p2p';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Button } from '@/components/ui/button';
 import { formatDistanceToNow } from 'date-fns';
-import { Search, Users, Wifi, WifiOff } from 'lucide-react';
+import { Search, Users, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { useState } from 'react';
 
@@ -12,9 +13,11 @@ interface PeerListProps {
   onSelectPeer: (peer: Peer) => void;
   isHost: boolean;
   hostAddress: string;
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
 }
 
-export function PeerList({ peers, selectedPeer, onSelectPeer, isHost, hostAddress }: PeerListProps) {
+export function PeerList({ peers, selectedPeer, onSelectPeer, isHost, hostAddress, onRefresh, isRefreshing }: PeerListProps) {
   const [search, setSearch] = useState('');
 
   const filteredPeers = peers.filter((p) =>
@@ -31,7 +34,22 @@ export function PeerList({ peers, selectedPeer, onSelectPeer, isHost, hostAddres
         <div className="flex items-center gap-3 mb-3">
           <Users className="w-6 h-6 text-primary" />
           <h2 className="text-lg font-display font-semibold text-foreground">Devices</h2>
-          <span className="ml-auto px-2 py-0.5 text-xs font-medium bg-primary/10 text-primary rounded-full">
+          
+          {/* Refresh Button */}
+          {onRefresh && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onRefresh}
+              disabled={isRefreshing}
+              className="ml-auto h-8 w-8"
+              title="Refresh devices"
+            >
+              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+            </Button>
+          )}
+          
+          <span className={`${onRefresh ? '' : 'ml-auto'} px-2 py-0.5 text-xs font-medium bg-primary/10 text-primary rounded-full`}>
             {onlinePeers.length} online
           </span>
         </div>
@@ -135,12 +153,14 @@ function PeerItem({ peer, isSelected, onSelect }: { peer: Peer; isSelected: bool
         <p className="font-medium text-foreground truncate">
           {peer.username}
         </p>
+        <p className="text-xs text-muted-foreground truncate">
+          {peer.deviceName && `${peer.deviceName} • `}{peer.ip}
+        </p>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-primary/70 font-mono">{peer.ip}</span>
           <span className="text-xs text-muted-foreground">
             {peer.isOnline
-              ? '• Online'
-              : `• ${formatDistanceToNow(peer.lastSeen, { addSuffix: true })}`}
+              ? 'Online'
+              : formatDistanceToNow(peer.lastSeen, { addSuffix: true })}
           </span>
         </div>
       </div>
